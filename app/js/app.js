@@ -531,7 +531,7 @@ function listBody(l, f) {
   const dets = l.detachments.map((id) => f.detById.get(id)).filter(Boolean);
   const disp = dispositionsOf(l, f);
   return `
-  <div class="meters">${meter('Points', pts, L.pts)}${meter('Detachment pts', dp, L.dp)}${meter('Enhancements', enhN, L.enh)}</div>
+  <div class="meters">${meter('Points', pts, L.pts)}${meter('DP', dp, L.dp)}${meter('Enhancements', enhN, L.enh)}</div>
   <button class="card dets" data-act="pickDetachments">
     <div class="muted small">Detachments</div>
     ${dets.length ? dets.map((d) => `<div class="det-line"><span>${esc(d.n)}</span><span class="tag">${d.dp} DP</span></div>`).join('') : '<div class="warn">Choose detachments…</div>'}
@@ -1165,7 +1165,7 @@ const A = {
       return toast(e.message);
     }
     const map = new Map();
-    const units = d.u.map(([unitId, cost, enh, wl, notes, name, po, oldUid, attachTo]) => {
+    const units = d.u.map(([unitId, cost, enh, wl, notes, name, po, oldUid, attachTo, ex]) => {
       const nu = uid();
       map.set(oldUid, nu);
       return { uid: nu, unitId, cost, enh, warlord: !!wl, notes, ptsOverride: po ?? null, attachTo, ex: ex || [], name: f.unitById.get(unitId)?.n || name, lastPts: 0 };

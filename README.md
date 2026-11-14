@@ -1,34 +1,23 @@
-# Muster — army list builder & battle tracker
+# Muster — 11th edition army builder, battle tracker & stratagems
 
-An installable web app (PWA) for building army lists from the community BattleScribe data (BSData) and tracking games. It runs offline once installed. Lists and games are stored on your device.
+An installable web app for building Warhammer 40,000 army lists, tracking games and looking up stratagems. It's for personal use by a small group, not for redistribution.
 
-## Put it online (one-time, free)
+**App:** https://amelesbrock.github.io/muster/
 
-The app has to be served over HTTPS before phones can install it. Pick one of these:
+## Install on a phone
+- **iPhone:** open the link in Safari → Share → **Add to Home Screen**.
+- **Android:** open the link in Chrome → **Install** (or ⋮ → Install app).
 
-### Option A: Netlify Drop (easiest, needs a computer)
-1. Unzip `muster.zip`.
-2. Go to https://app.netlify.com/drop and drag the **muster** folder onto the page.
-3. Sign up for a free account when it offers, so the site stays up. You get a link like `https://something.netlify.app`. You can rename it in Site settings.
+## Where the data comes from
+Every night (03:17 UTC) a GitHub Action downloads Wahapedia's public data export, compiles it into small per-faction files and republishes the site. Data powered by [Wahapedia](https://wahapedia.ru).
 
-### Option B: GitHub Pages
-1. Create a free GitHub account and a new **public** repository, e.g. `muster`.
-2. Upload the files from this folder (Add file → Upload files). `index.html` should sit at the top level of the repo.
-3. Go to Settings → Pages → Source: *Deploy from a branch* → `main` / root → Save.
-4. After a minute the app is at `https://<your-username>.github.io/muster/`.
+- To update straight away (e.g. after a points change): on GitHub open **Actions → Build and deploy Muster → Run workflow**. Then in the app: ⚙ → **Update data on this phone**.
+- If Wahapedia can't be reached, the build fails on purpose and the previous version stays live.
 
-## Install on phones
-- **iPhone**: open the link in **Safari** → Share → **Add to Home Screen**.
-- **Android**: open the link in **Chrome** → tap **Install** in the app, or ⋮ menu → **Install app**.
+## Layout
+- `app/` — the web app (HTML/CSS/JS, no build step)
+- `scripts/fetch-data.sh` — downloads the CSV export
+- `scripts/compile.py` — turns it into `data/index.json`, `data/core.json` and `data/f/<faction>.json`
+- `.github/workflows/deploy.yml` — build and deploy to GitHub Pages
 
-Send your friends the same link. Each person's lists stay on their own phone. To swap lists, use **⋯ → Share code** and paste it into **Import**.
-
-## Points updates
-Go to **Data → Update downloaded factions**. The app re-downloads the latest community data, shows you what changed, and every list recalculates automatically. If a unit's points ever look wrong, open it in your list and use **"Points look wrong? Set them manually"**.
-
-## Updating the app itself
-If you change any app file, also change `VERSION` in `sw.js` (e.g. `muster-v2`) so installed copies pick up the update.
-
-## Notes
-- Unofficial fan tool, not affiliated with or endorsed by Games Workshop. Data comes from the volunteer BSData project (github.com/BSData), so check anything important against your official rules.
-- The data source (owner/repo/branch) can be changed under **Data → Data source**, for when a new edition repository appears.
+Unofficial fan tool, not affiliated with or endorsed by Games Workshop.

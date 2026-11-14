@@ -155,6 +155,16 @@ def unit(ds):
     }
 
 
+def dedupe_strats(lst):
+    """Wahapedia keeps some older copies of the same stratagem; keep the newest (highest id) per name+detachment."""
+    best = {}
+    for s in lst:
+        k = (s['n'].strip().upper(), s['det'])
+        if k not in best or s['id'] > best[k]['id']:
+            best[k] = s
+    return list(best.values())
+
+
 def strat(s):
     return {'id': s['id'], 'n': s['name'], 'type': s['type'], 'cp': s['cp_cost'], 'turn': s['turn'], 'ph': s['phase'],
             'det': s['detachment_id'], 'dn': s['detachment'], 'fac': s['faction_id'], 'd': s['description']}
@@ -183,8 +193,8 @@ for fac in factions:
         'id': e['id'], 'n': e['name'], 'pts': num(e['cost']), 'det': e['detachment_id'], 'dn': e['detachment'],
         'up': e['upgrade'] == 'true', 'sl': e['support_leader'], 'd': e['description'],
     } for e in enhs if e['faction_id'] == fid and e['detachment_id'] not in BA]
-    fac_str = [strat(s) for s in strats if s['faction_id'] == fid and s['detachment_id'] not in BA
-               and 'boarding' not in (s['type'] or '').lower()]
+    fac_str = dedupe_strats([strat(s) for s in strats if s['faction_id'] == fid and s['detachment_id'] not in BA
+                             and 'boarding' not in (s['type'] or '').lower()])
     army_rules = {}
     for u in units:
         for a in u['ab']:
@@ -202,6 +212,7 @@ for fac in factions:
 
 core = [strat(s) for s in strats if not s['faction_id'] and not s['detachment_id'] and 'boarding' not in (s['type'] or '').lower()
         and s['name']]
+core = dedupe_strats(core)
 print('core', len(core), collections.Counter(s['type'] for s in core))
 with open(f'{D}/core.json', 'w', encoding='utf-8') as fh:
     json.dump({'stratagems': core}, fh, ensure_ascii=False, separators=(',', ':'))
