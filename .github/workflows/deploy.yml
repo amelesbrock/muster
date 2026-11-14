@@ -27,6 +27,8 @@ jobs:
       - name: Fetch Wahapedia data export
         timeout-minutes: 15
         run: bash scripts/fetch-data.sh
+      - name: Compile data for the app
+        run: python3 scripts/compile.py
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)

@@ -26,4 +26,3 @@ done
 printf '},"fetched":"%s","source":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BASE" >> "$OUT/manifest.json.tmp"
 mv "$OUT/manifest.json.tmp" "$OUT/manifest.json"
 cat "$OUT/manifest.json"
-timeout 120 python3 -u scripts/inspect.py || echo "inspect failed"
