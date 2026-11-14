@@ -19,11 +19,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Copy app
         run: mkdir -p site && cp -r app/. site/
       - name: Fetch Wahapedia data export
+        timeout-minutes: 15
         run: bash scripts/fetch-data.sh
       - name: Stamp build
         run: |

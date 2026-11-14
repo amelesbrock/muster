@@ -6,7 +6,7 @@ def rows(name):
     p = f'{D}/{name}.csv'
     if not os.path.exists(p): return []
     with open(p, encoding='utf-8-sig', newline='') as fh:
-        return list(csv.DictReader(fh, delimiter='|'))
+        return list(csv.DictReader(fh, delimiter='|', quoting=csv.QUOTE_NONE))
 def cut(s, n=90): s = (s or '').replace('\n', ' '); return s if len(s) <= n else s[:n] + '…'
 print('==== INSPECT ====')
 fac = rows('Factions'); print('FACTIONS', [(r['id'], r['name']) for r in fac])

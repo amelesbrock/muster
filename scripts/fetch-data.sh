@@ -10,7 +10,7 @@ UA="Mozilla/5.0 (compatible; MusterApp/1.0; personal list builder)"
 echo '{"files":{' > "$OUT/manifest.json.tmp"
 first=1
 for f in $FILES; do
-  if curl -fsSL --retry 3 --max-time 120 -A "$UA" "$BASE/$f.csv" -o "$OUT/$f.csv"; then
+  if curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 -A "$UA" "$BASE/$f.csv" -o "$OUT/$f.csv"; then
     size=$(wc -c < "$OUT/$f.csv")
     rows=$(wc -l < "$OUT/$f.csv")
     header=$(head -n1 "$OUT/$f.csv" | tr -d '\r\n\357\273\277' | sed 's/\\/\\\\/g; s/"/\\"/g')
@@ -26,4 +26,4 @@ done
 printf '},"fetched":"%s","source":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BASE" >> "$OUT/manifest.json.tmp"
 mv "$OUT/manifest.json.tmp" "$OUT/manifest.json"
 cat "$OUT/manifest.json"
-python3 scripts/inspect.py || true
+timeout 120 python3 -u scripts/inspect.py || echo "inspect failed"
