@@ -1,47 +1,89 @@
-// Muster — army list builder & battle tracker
+// Muster — 11th edition army builder, battle tracker and stratagem reference.
+// Data: Wahapedia export, compiled at build time into ./data (see scripts/compile.py).
 import * as store from './store.js';
-import { DEFAULT_SOURCE, listFactions, buildFaction, latestCommit, factionLabel, clearRawCache } from './data.js';
+import * as data from './data.js';
 
-// ---------------------------------------------------------------- state
+// ================================================================= state
+const SIZES = {
+  incursion: { label: 'Incursion', pts: 1000, dp: 2, enh: 2, unit: 2 },
+  strike: { label: 'Strike Force', pts: 2000, dp: 3, enh: 4, unit: 3 },
+  custom: { label: 'Custom', pts: 2000, dp: 3, enh: 4, unit: 3 },
+};
+const PHASES = [
+  { k: 'command', label: 'Command' },
+  { k: 'movement', label: 'Movement' },
+  { k: 'shooting', label: 'Shooting' },
+  { k: 'charge', label: 'Charge' },
+  { k: 'fight', label: 'Fight' },
+];
+
 const S = {
-  tab: 'lists',
+  tab: 'army',
   openListId: null,
   lists: [],
   games: [],
   activeGameId: null,
+  index: null,
+  core: null,
+  cached: [], // faction ids on this device
   settings: {
-    source: { ...DEFAULT_SOURCE },
     caps: { primary: 50, secondary: 40, battleReady: 10, total: 100 },
     hideLegends: true,
   },
-  factionIndex: null, // {sha, date, files:[{file,name,group}], checkedAt}
-  downloaded: [], // [{file, name, revision, builtAt, commitDate, units}]
+  strat: { side: 'mine', listId: '', oppFaction: '', oppDets: [], allDets: false, core: true, phase: '', turn: '', q: '', open: {} },
   showIssues: true,
 };
-const factionCache = new Map();
+const factions = new Map();
 let deferredInstall = null;
 
-// ---------------------------------------------------------------- utils
-const $ = (sel, root = document) => root.querySelector(sel);
+// ================================================================= utils
+const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-
-function fmtRule(text) {
-  return esc(text)
-    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/\^\^(.+?)\^\^/g, '<span class="kwd">$1</span>')
-    .replace(/\n/g, '<br>');
-}
-
-function fmtDate(iso) {
+const fmtDate = (iso) => {
   if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-  } catch {
-    return iso.slice(0, 10);
-  }
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso).slice(0, 10) : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+// Wahapedia descriptions are HTML: keep simple formatting, drop links, scripts and attributes
+const ALLOWED = new Set(['B', 'STRONG', 'I', 'EM', 'BR', 'P', 'UL', 'OL', 'LI', 'SPAN', 'DIV', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'SUP', 'SUB']);
+const sanCache = new Map();
+function rich(html) {
+  if (!html) return '';
+  if (sanCache.has(html)) return sanCache.get(html);
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+  const walk = (n) => {
+    for (const c of [...n.childNodes]) {
+      if (c.nodeType === 1) {
+        if (!ALLOWED.has(c.tagName)) {
+          if (['SCRIPT', 'STYLE', 'IMG', 'IFRAME', 'OBJECT'].includes(c.tagName)) c.remove();
+          else {
+            walk(c);
+            c.replaceWith(...c.childNodes);
+          }
+          continue;
+        }
+        const cls = c.getAttribute('class') || '';
+        for (const a of [...c.attributes]) c.removeAttribute(a.name);
+        if (/kwb/.test(cls)) c.setAttribute('class', 'kwd');
+        if (/ShowFluff|legend/.test(cls)) c.setAttribute('class', 'fluff');
+        walk(c);
+      } else if (c.nodeType !== 3) c.remove();
+    }
+  };
+  const root = doc.body.firstChild;
+  walk(root);
+  const out = root.innerHTML;
+  if (sanCache.size > 3000) sanCache.clear();
+  sanCache.set(html, out);
+  return out;
 }
+const plain = (html) => {
+  const d = new DOMParser().parseFromString(`<div>${html || ''}</div>`, 'text/html');
+  return d.body.textContent || '';
+};
 
 let toastTimer;
 function toast(msg) {
@@ -55,15 +97,11 @@ function toast(msg) {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    toast('Copied to clipboard');
-    return true;
+    toast('Copied');
   } catch {
-    showSheet(() => `<div class="sheet-head"><h2>Copy this</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-body"><textarea class="copybox" readonly>${esc(text)}</textarea></div>`);
-    return false;
+    showSheet(() => `${head('Copy this')}<div class="sheet-body"><textarea class="copybox" readonly>${esc(text)}</textarea></div>`);
   }
 }
-
 async function shareText(title, text) {
   if (navigator.share) {
     try {
@@ -76,183 +114,216 @@ async function shareText(title, text) {
   copyText(text);
 }
 
-// ---------------------------------------------------------------- persistence
+function showBusy(msg) {
+  $('#busy .busy-msg').textContent = msg;
+  $('#busy').classList.add('show');
+}
+const hideBusy = () => $('#busy').classList.remove('show');
+
+// ================================================================= persistence
 async function save(what) {
   if (!what || what === 'lists') await store.set('kv', 'lists', S.lists);
   if (!what || what === 'games') await store.set('kv', 'games', S.games);
-  if (!what || what === 'settings') await store.set('kv', 'settings', { ...S.settings, activeGameId: S.activeGameId });
+  if (!what || what === 'settings') await store.set('kv', 'settings', { ...S.settings, activeGameId: S.activeGameId, strat: { ...S.strat, open: {}, q: '' } });
 }
 
-async function refreshDownloaded() {
-  const files = await store.keys('factions');
-  const out = [];
-  for (const file of files) {
-    const f = await getFaction(file);
-    if (f) out.push({ file, name: f.name, revision: f.revision, builtAt: f.builtAt, commitDate: f.commitDate, units: f.units.length, source: f.source });
-  }
-  S.downloaded = out.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-async function getFaction(file) {
-  if (!file) return null;
-  if (factionCache.has(file)) return factionCache.get(file);
-  const f = await store.get('factions', file);
-  if (!f) return null;
-  prepFaction(f);
-  factionCache.set(file, f);
+async function getFaction(id) {
+  if (!id) return null;
+  if (factions.has(id)) return factions.get(id);
+  const f = await data.cachedFaction(id);
+  if (f) factions.set(id, f);
   return f;
 }
 
-function prepFaction(f) {
-  f.unitById = new Map(f.units.map((u) => [u.id, u]));
-  f.enhById = new Map(f.enhancements.map((e) => [e.id, e]));
-  f.detById = new Map(f.detachments.map((d) => [d.id, d]));
+async function ensureIndex() {
+  if (S.index) return S.index;
+  showBusy('Getting faction list…');
+  try {
+    S.index = await data.fetchIndex();
+  } finally {
+    hideBusy();
+  }
+  return S.index;
 }
 
-// Download with a progress overlay
-async function ensureFaction(file, { force = false } = {}) {
-  if (!force) {
-    const f = await getFaction(file);
-    if (f) return { faction: f, changes: [] };
-  }
-  showBusy(`Getting ${factionLabel(file)}…`);
+async function ensureFaction(id) {
+  const f = await getFaction(id);
+  if (f) return f;
+  const idx = await ensureIndex();
+  const name = idx.factions.find((x) => x.id === id)?.n || id;
+  showBusy(`Downloading ${name}…`);
   try {
-    const res = await buildFaction(S.settings.source, file, { onProgress: (m) => showBusy(m) });
-    prepFaction(res.faction);
-    factionCache.set(file, res.faction);
-    await refreshDownloaded();
-    return res;
+    const nf = await data.downloadFaction(id, idx.built);
+    factions.set(id, nf);
+    S.cached = await data.cachedFactionIds();
+    if (!S.core) S.core = await data.downloadCore().catch(() => null);
+    return nf;
   } finally {
     hideBusy();
   }
 }
 
-function showBusy(msg) {
-  const b = $('#busy');
-  b.querySelector('.busy-msg').textContent = msg;
-  b.classList.add('show');
+// ================================================================= list maths
+const ROLE_ORDER = ['Epic Hero', 'Character', 'Battleline', 'Infantry', 'Mounted', 'Beast', 'Swarm', 'Monster', 'Walker', 'Vehicle', 'Transport', 'Dedicated Transports', 'Aircraft', 'Artillery', 'Titanic', 'Fortifications', 'Other'];
+function roleGroup(u) {
+  if (!u) return 'Other';
+  if (u.epic) return 'Epic Hero';
+  if (u.character) return 'Character';
+  if (u.battleline) return 'Battleline';
+  if (u.dt) return 'Dedicated Transports';
+  return u.role.replace(/ (Character|Epic Hero)$/, '') || 'Other';
 }
-function hideBusy() {
-  $('#busy').classList.remove('show');
-}
-
-// ---------------------------------------------------------------- list maths
-const ROLE_ORDER = ['Epic Hero', 'Character', 'Battleline', 'Infantry', 'Mounted', 'Beast', 'Swarm', 'Monster', 'Vehicle', 'Dedicated Transport', 'Fortification', 'Allied Units', 'Other'];
 const roleRank = (r) => {
   const i = ROLE_ORDER.indexOf(r);
-  return i < 0 ? ROLE_ORDER.length - 1 : i;
+  return i < 0 ? ROLE_ORDER.length - 2 : i;
 };
 
-function sizeFor(unit, models) {
-  if (!unit || !unit.sizes.length) return { models, pts: 0 };
-  return unit.sizes.find((s) => s.models === models) || unit.sizes.reduce((a, b) => (Math.abs(b.models - models) < Math.abs(a.models - models) ? b : a));
-}
+const limitsOf = (l) => l.limits || SIZES.strike;
 
+function costOpt(u, e) {
+  if (!u || !u.c.length) return { pts: 0, d: '' };
+  return u.c[Math.min(e.cost || 0, u.c.length - 1)];
+}
 function entryPts(e, f) {
   if (e.ptsOverride != null && e.ptsOverride !== '') return +e.ptsOverride || 0;
   const u = f && f.unitById.get(e.unitId);
   if (!u) return e.lastPts || 0;
-  let p = sizeFor(u, e.models).pts;
-  const enh = e.enhancementId && f.enhById.get(e.enhancementId);
-  if (enh) p += enh.pts;
+  let p = costOpt(u, e).pts;
+  const en = e.enh && f.enhById.get(e.enh);
+  if (en) p += en.pts;
   return p;
 }
+const listPts = (l, f) => l.units.reduce((t, e) => t + entryPts(e, f), 0);
+const listDp = (l, f) => (l.detachments || []).reduce((t, id) => t + (f.detById.get(id)?.dp || 0), 0);
 
-function listPts(list, f) {
-  return list.units.reduce((t, e) => t + entryPts(e, f), 0);
-}
-
-function validate(list, f) {
+function validate(l, f) {
   const out = [];
-  if (!f) return [{ level: 'warn', msg: 'Faction data not downloaded on this device.' }];
-  const pts = listPts(list, f);
-  if (pts > list.limit) out.push({ level: 'error', msg: `Over the points limit by ${pts - list.limit} pts.` });
-  if (f.detachments.length && !list.detachmentId) out.push({ level: 'warn', msg: 'No detachment chosen.' });
+  if (!f) return [{ level: 'warn', msg: 'Faction data not on this device yet.' }];
+  const L = limitsOf(l);
+  const pts = listPts(l, f);
+  if (pts > L.pts) out.push({ level: 'error', msg: `Over the points limit by ${pts - L.pts}.` });
+  const dp = listDp(l, f);
+  if (!l.detachments.length) out.push({ level: 'warn', msg: 'No detachment chosen.' });
+  if (dp > L.dp) out.push({ level: 'error', msg: `Detachments cost ${dp} DP — limit is ${L.dp}.` });
+  const disp = dispositionsOf(l, f);
+  if (l.detachments.length && !l.disposition) out.push({ level: 'warn', msg: 'No Force Disposition chosen.' });
+  else if (l.disposition && !disp.includes(l.disposition)) out.push({ level: 'warn', msg: `${l.disposition} isn't granted by your detachments.` });
   const counts = new Map();
-  for (const e of list.units) counts.set(e.unitId, (counts.get(e.unitId) || 0) + 1);
+  for (const e of l.units) counts.set(e.unitId, (counts.get(e.unitId) || 0) + 1);
   for (const [id, n] of counts) {
     const u = f.unitById.get(id);
     if (!u) continue;
-    const max = u.epic ? 1 : u.battleline || u.dedicatedTransport ? 6 : 3;
-    if (n > max) out.push({ level: 'error', msg: `${u.name}: ${n} taken, max ${max}${u.epic ? ' (Epic Hero)' : ''}.` });
+    const max = u.epic ? 1 : u.battleline ? L.unit * 2 : L.unit;
+    if (n > max) out.push({ level: 'error', msg: `${u.n}: ${n} taken, max ${max}${u.epic ? ' (Epic Hero)' : ''}.` });
   }
-  const enh = list.units.filter((e) => e.enhancementId);
-  if (enh.length > 3) out.push({ level: 'error', msg: `${enh.length} enhancements — max 3.` });
-  const seenEnh = new Set();
-  for (const e of enh) {
-    const en = f.enhById.get(e.enhancementId);
+  const withEnh = l.units.filter((e) => e.enh);
+  if (withEnh.length > L.enh) out.push({ level: 'error', msg: `${withEnh.length} enhancements — limit is ${L.enh}.` });
+  const seen = new Set();
+  for (const e of withEnh) {
+    const en = f.enhById.get(e.enh);
     const u = f.unitById.get(e.unitId);
     if (!en) continue;
-    if (seenEnh.has(en.id)) out.push({ level: 'error', msg: `${en.name} taken more than once.` });
-    seenEnh.add(en.id);
-    if (u && (!u.character || u.epic)) out.push({ level: 'error', msg: `${u.name} can't take an enhancement.` });
-    if (list.detachmentId && en.detachments.length && !en.detachments.includes(list.detachmentId)) {
-      out.push({ level: 'warn', msg: `${en.name} isn't from your chosen detachment.` });
+    if (seen.has(en.id)) out.push({ level: 'error', msg: `${en.n} taken more than once.` });
+    seen.add(en.id);
+    if (en.det && !l.detachments.includes(en.det)) out.push({ level: 'error', msg: `${en.n} needs the ${en.dn} detachment.` });
+    if (u && u.enh.length && !u.enh.includes(en.id)) out.push({ level: 'warn', msg: `${u.n} isn't listed as able to take ${en.n}.` });
+    if (u && u.epic) out.push({ level: 'error', msg: `${u.n} is an Epic Hero and can't take enhancements.` });
+  }
+  const wl = l.units.filter((e) => e.warlord);
+  if (l.units.length && !wl.length) out.push({ level: 'warn', msg: 'No Warlord chosen.' });
+  if (wl.length > 1) out.push({ level: 'error', msg: 'More than one Warlord.' });
+  for (const e of wl) {
+    const u = f.unitById.get(e.unitId);
+    if (u && !u.character) out.push({ level: 'error', msg: `${u.n} isn't a Character, so can't be Warlord.` });
+  }
+  const leadersOn = new Map();
+  for (const e of l.units) {
+    if (!e.attachTo) continue;
+    const host = l.units.find((x) => x.uid === e.attachTo);
+    const u = f.unitById.get(e.unitId);
+    if (!host) continue;
+    if (u && !u.leads.includes(host.unitId)) out.push({ level: 'error', msg: `${u.n} can't be attached to ${host.name}.` });
+    const key = host.uid + (u && u.sup ? ':s' : ':l');
+    leadersOn.set(key, (leadersOn.get(key) || 0) + 1);
+  }
+  for (const [k, n] of leadersOn) {
+    if (n > 1) {
+      const host = l.units.find((x) => x.uid === k.split(':')[0]);
+      out.push({ level: 'warn', msg: `${host.name} has ${n} ${k.endsWith(':s') ? 'support' : 'leader'} characters attached — check the rules allow it.` });
     }
   }
-  const warlords = list.units.filter((e) => e.warlord);
-  if (list.units.length && !warlords.length) out.push({ level: 'warn', msg: 'No Warlord chosen.' });
-  if (warlords.length > 1) out.push({ level: 'error', msg: 'More than one Warlord.' });
-  for (const e of list.units) {
-    if (!f.unitById.get(e.unitId)) out.push({ level: 'warn', msg: `${e.name} is no longer in the data (kept at ${e.lastPts || 0} pts).` });
-  }
+  for (const e of l.units) if (!f.unitById.get(e.unitId)) out.push({ level: 'warn', msg: `${e.name} is no longer in the data (kept at ${e.lastPts || 0} pts).` });
   return out;
 }
 
-function listAsText(list, f) {
-  const pts = listPts(list, f);
-  const det = f && list.detachmentId && f.detById.get(list.detachmentId);
-  const lines = [`${list.name} — ${pts}/${list.limit} pts`, `${list.factionName}${det ? ' — ' + det.name : ''}`, ''];
-  const groups = groupEntries(list, f);
-  for (const [role, entries] of groups) {
+function dispositionsOf(l, f) {
+  const s = new Set();
+  for (const id of l.detachments || []) for (const d of f.detById.get(id)?.fd || []) s.add(d);
+  return [...s];
+}
+
+// Entries ordered by role, with attached characters directly after their bodyguard
+function groupEntries(l, f) {
+  const attached = new Map();
+  for (const e of l.units) if (e.attachTo && l.units.some((x) => x.uid === e.attachTo)) {
+    if (!attached.has(e.attachTo)) attached.set(e.attachTo, []);
+    attached.get(e.attachTo).push(e);
+  }
+  const groups = new Map();
+  for (const e of l.units) {
+    if (e.attachTo && l.units.some((x) => x.uid === e.attachTo)) continue;
+    const role = roleGroup(f && f.unitById.get(e.unitId));
+    if (!groups.has(role)) groups.set(role, []);
+    groups.get(role).push(e, ...(attached.get(e.uid) || []));
+  }
+  return [...groups.entries()].sort((a, b) => roleRank(a[0]) - roleRank(b[0]));
+}
+
+function listAsText(l, f) {
+  const L = limitsOf(l);
+  const dets = l.detachments.map((id) => f.detById.get(id)).filter(Boolean);
+  const lines = [
+    `${l.name} — ${listPts(l, f)}/${L.pts} pts`,
+    `${l.factionName} · ${dets.map((d) => `${d.n} (${d.dp} DP)`).join(' + ') || 'no detachment'}`,
+    l.disposition ? `Force Disposition: ${l.disposition}` : '',
+    '',
+  ].filter((x, i) => x || i === 3);
+  for (const [role, entries] of groupEntries(l, f)) {
     lines.push(role.toUpperCase());
     for (const e of entries) {
-      const u = f && f.unitById.get(e.unitId);
-      const en = e.enhancementId && f && f.enhById.get(e.enhancementId);
+      const u = f.unitById.get(e.unitId);
+      const en = e.enh && f.enhById.get(e.enh);
       const bits = [];
-      if (u && u.models.max > 1) bits.push(`${e.models} models`);
+      if (u && u.c.length > 1) bits.push(costOpt(u, e).d);
       if (e.warlord) bits.push('Warlord');
-      if (en) bits.push(`${en.name} (+${en.pts})`);
-      lines.push(`• ${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f)} pts`);
-      if (e.ptsOverride != null && e.ptsOverride !== '') lines.push('   (points set manually)');
-      if (e.notes) lines.push(`   ${e.notes.replace(/\n/g, '; ')}`);
+      if (en) bits.push(`${en.n} +${en.pts}`);
+      const host = e.attachTo && l.units.find((x) => x.uid === e.attachTo);
+      lines.push(`${host ? '   ↳ ' : '• '}${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f)} pts${host ? ` (with ${host.name})` : ''}`);
+      if (e.notes) lines.push(`     ${e.notes.replace(/\n/g, '; ')}`);
     }
     lines.push('');
   }
-  lines.push('Made with Muster');
+  lines.push('Made with Muster · data powered by Wahapedia');
   return lines.join('\n');
 }
 
-function groupEntries(list, f) {
-  const map = new Map();
-  for (const e of list.units) {
-    const u = f && f.unitById.get(e.unitId);
-    const role = (u && u.role) || 'Other';
-    if (!map.has(role)) map.set(role, []);
-    map.get(role).push(e);
-  }
-  return [...map.entries()].sort((a, b) => roleRank(a[0]) - roleRank(b[0]));
+function encodeList(l) {
+  const d = { v: 2, n: l.name, f: l.factionId, s: l.size, L: l.limits, d: l.detachments, fd: l.disposition || '', u: l.units.map((e) => [e.unitId, e.cost || 0, e.enh || '', e.warlord ? 1 : 0, e.notes || '', e.name, e.ptsOverride ?? null, e.uid, e.attachTo || '']) };
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(d))));
+  return 'MUSTER2:' + b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
-
-// Compact share code
-function encodeList(list) {
-  const data = { v: 1, n: list.name, f: list.factionFile, l: list.limit, d: list.detachmentId || '', u: list.units.map((e) => [e.unitId, e.models, e.enhancementId || '', e.warlord ? 1 : 0, e.notes || '', e.name, e.ptsOverride ?? null]) };
-  const json = JSON.stringify(data);
-  const b64 = btoa(unescape(encodeURIComponent(json)));
-  return 'MUSTER1:' + b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 function decodeList(code) {
-  const raw = String(code || '').trim().replace(/^MUSTER1:/, '').replace(/\s+/g, '');
-  const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
-  const json = decodeURIComponent(escape(atob(b64)));
-  const d = JSON.parse(json);
-  if (d.v !== 1 || !d.f) throw new Error('Not a Muster list code');
+  const raw = String(code || '').trim().replace(/^MUSTER2:/, '').replace(/\s+/g, '');
+  const d = JSON.parse(decodeURIComponent(escape(atob(raw.replace(/-/g, '+').replace(/_/g, '/')))));
+  if (d.v !== 2 || !d.f) throw new Error('bad');
   return d;
 }
 
-// ---------------------------------------------------------------- sheets (modal stack)
+// ================================================================= sheets
 const sheets = [];
+let confirmResolve = null;
+let promptResolve = null;
+const head = (title, extra = '') => `<div class="sheet-head"><h2>${esc(title)}</h2>${extra}<button class="icon" data-act="closeSheet" aria-label="Close">✕</button></div>`;
 function showSheet(render, opts = {}) {
   sheets.push({ render, opts });
   renderSheets();
@@ -267,33 +338,23 @@ function closeAllSheets() {
   renderSheets();
 }
 function renderSheets() {
-  const root = $('#sheets');
-  root.innerHTML = sheets
-    .map((s, i) => `<div class="scrim ${i === sheets.length - 1 ? 'top' : ''}" data-act="${i === sheets.length - 1 ? 'scrim' : ''}"></div>
-      <div class="sheet ${s.opts.tall ? 'tall' : ''}" data-sheet="${i}">${s.render()}</div>`)
+  $('#sheets').innerHTML = sheets
+    .map((s, i) => `<div class="scrim" data-act="${i === sheets.length - 1 ? 'closeSheet' : ''}"></div><div class="sheet ${s.opts.tall ? 'tall' : ''}" data-sheet="${i}">${s.render()}</div>`)
     .join('');
   document.body.classList.toggle('sheet-open', sheets.length > 0);
 }
 function rerenderTopSheet() {
   const i = sheets.length - 1;
-  if (i < 0) return;
   const el = document.querySelector(`[data-sheet="${i}"]`);
   if (!el) return renderSheets();
-  const body = el.querySelector('.sheet-body');
-  const scroll = body ? body.scrollTop : 0;
+  const sc = el.querySelector('.sheet-body')?.scrollTop || 0;
   el.innerHTML = sheets[i].render();
-  const nb = el.querySelector('.sheet-body');
-  if (nb) nb.scrollTop = scroll;
+  const b = el.querySelector('.sheet-body');
+  if (b) b.scrollTop = sc;
 }
-
-function confirmBox(msg, okLabel = 'OK', danger = false) {
+function confirmBox(msg, ok = 'OK', danger = false) {
   return new Promise((resolve) => {
-    showSheet(
-      () => `<div class="sheet-body pad-top"><p class="confirm-msg">${esc(msg)}</p>
-        <div class="row gap"><button class="btn ghost grow" data-act="confirmNo">Cancel</button>
-        <button class="btn ${danger ? 'danger' : 'primary'} grow" data-act="confirmYes">${esc(okLabel)}</button></div></div>`,
-      { onClose: () => resolve(false) }
-    );
+    showSheet(() => `<div class="sheet-body pad-top"><p class="confirm-msg">${esc(msg)}</p><div class="row gap"><button class="btn ghost grow" data-act="confirmNo">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'} grow" data-act="confirmYes">${esc(ok)}</button></div></div>`, { onClose: () => resolve(false) });
     confirmResolve = (v) => {
       sheets.pop();
       renderSheets();
@@ -301,15 +362,10 @@ function confirmBox(msg, okLabel = 'OK', danger = false) {
     };
   });
 }
-let confirmResolve = null;
-
-function promptBox(title, value = '', { placeholder = '', multiline = false, okLabel = 'Save' } = {}) {
+function promptBox(title, value = '', { placeholder = '', multiline = false, ok = 'Save', numeric = false } = {}) {
   return new Promise((resolve) => {
     showSheet(
-      () => `<div class="sheet-head"><h2>${esc(title)}</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-body">
-        ${multiline ? `<textarea id="promptInput" rows="5" placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="promptInput" value="${esc(value)}" placeholder="${esc(placeholder)}">`}
-        <button class="btn primary block" data-act="promptOk">${esc(okLabel)}</button></div>`,
+      () => `${head(title)}<div class="sheet-body">${multiline ? `<textarea id="promptInput" rows="5" placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="promptInput" ${numeric ? 'inputmode="numeric"' : ''} value="${esc(value)}" placeholder="${esc(placeholder)}">`}<button class="btn primary block" data-act="promptOk">${esc(ok)}</button></div>`,
       { onClose: () => resolve(null) }
     );
     promptResolve = (v) => {
@@ -317,150 +373,108 @@ function promptBox(title, value = '', { placeholder = '', multiline = false, okL
       renderSheets();
       resolve(v);
     };
-    setTimeout(() => {
-      const i = $('#promptInput');
-      if (i) i.focus();
-    }, 50);
+    setTimeout(() => $('#promptInput')?.focus(), 60);
   });
 }
-let promptResolve = null;
 
-// ---------------------------------------------------------------- views
+// ================================================================= render
+let keepScroll = false;
 function render() {
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
-  const v = $('#view');
   const y = window.scrollY;
-  if (S.tab === 'lists') v.innerHTML = S.openListId ? viewList() : viewLists();
+  const v = $('#view');
+  if (S.tab === 'army') v.innerHTML = S.openListId ? viewList() : viewLists();
   else if (S.tab === 'battle') v.innerHTML = viewBattle();
-  else v.innerHTML = viewData();
-  window.scrollTo(0, renderKeepScroll ? y : 0);
-  renderKeepScroll = false;
-  if (S.openListId && S.tab === 'lists') hydrateList();
+  else v.innerHTML = viewStrats();
+  window.scrollTo(0, keepScroll ? y : 0);
+  keepScroll = false;
+  if (S.tab === 'army' && S.openListId) hydrateList();
+  if (S.tab === 'strats') hydrateStrats();
 }
-let renderKeepScroll = false;
 const rerender = () => {
-  renderKeepScroll = true;
+  keepScroll = true;
   render();
 };
+const gear = `<button class="icon" data-act="settings" aria-label="Settings">⚙</button>`;
 
 function installBanner() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   if (standalone) return '';
-  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
   if (deferredInstall) return `<div class="banner"><span>Install Muster on this device</span><button class="btn small primary" data-act="install">Install</button></div>`;
-  if (ios) return `<div class="banner"><span>To install: tap <b>Share</b> <span class="ios-share">⬆︎</span> then <b>Add to Home Screen</b>.</span></div>`;
+  if (/iphone|ipad|ipod/i.test(navigator.userAgent)) return `<div class="banner"><span>To install: tap <b>Share</b> then <b>Add to Home Screen</b>.</span></div>`;
   return '';
 }
 
-// ----- Lists home
+// ---------------------------------------------------------------- Army: lists
 function viewLists() {
   const cards = S.lists
     .slice()
     .sort((a, b) => (b.updated || 0) - (a.updated || 0))
     .map((l) => {
-      const f = factionCache.get(l.factionFile);
+      const f = factions.get(l.factionId);
+      const L = limitsOf(l);
       const pts = f ? listPts(l, f) : '—';
-      const det = f && l.detachmentId && f.detById.get(l.detachmentId);
-      const issues = f ? validate(l, f).filter((x) => x.level === 'error').length : 0;
-      const over = f && pts > l.limit;
-      return `<button class="card list-card" data-act="openList" data-id="${l.id}">
-        <div class="lc-main"><div class="lc-name">${esc(l.name)}</div>
-        <div class="lc-sub">${esc(l.factionName)}${det ? ' · ' + esc(det.name) : ''}</div>
-        <div class="lc-sub">${plural(l.units.length, 'unit')}${issues ? ` · <span class="err">${plural(issues, 'issue')}</span>` : ''}</div></div>
-        <div class="lc-pts ${over ? 'err' : ''}"><b>${pts}</b><span>/ ${l.limit}</span></div></button>`;
+      const dets = f ? l.detachments.map((id) => f.detById.get(id)?.n).filter(Boolean).join(' + ') : '';
+      const errs = f ? validate(l, f).filter((x) => x.level === 'error').length : 0;
+      return `<button class="card list-card" data-act="openList" data-id="${l.id}"><div class="lc-main"><div class="lc-name">${esc(l.name)}</div>
+        <div class="lc-sub">${esc(l.factionName)}${dets ? ' · ' + esc(dets) : ''}</div>
+        <div class="lc-sub">${plural(l.units.length, 'unit')}${errs ? ` · <span class="err">${plural(errs, 'issue')}</span>` : ''}</div></div>
+        <div class="lc-pts ${f && pts > L.pts ? 'err' : ''}"><b>${pts}</b><span>/ ${L.pts}</span></div></button>`;
     })
     .join('');
-  return `<header class="top"><div class="brand"><span class="logo">◈</span> Muster</div></header>
-  <main class="pad">
-    ${installBanner()}
-    <div class="row gap"><button class="btn primary grow" data-act="newList">＋ New army list</button>
-    <button class="btn ghost" data-act="importList">Import</button></div>
-    ${cards ? `<div class="stack">${cards}</div>` : `<div class="empty"><div class="empty-ico">⚔</div><p>No lists yet.</p><p class="muted">Create one to start mustering your army. Unit data is downloaded from the community BattleScribe repository the first time you pick a faction.</p></div>`}
+  return `<header class="top"><div class="brand"><span class="logo">◈</span> Muster</div><div class="grow"></div>${gear}</header>
+  <main class="pad">${installBanner()}
+    <div class="row gap"><button class="btn primary grow" data-act="newList">＋ New army list</button><button class="btn ghost" data-act="importList">Import</button></div>
+    ${cards ? `<div class="stack">${cards}</div>` : `<div class="empty"><div class="empty-ico">⚔</div><p>No army lists yet.</p><p class="muted">Pick a faction to start. Its datasheets, points, detachments and stratagems download to this phone so they work offline.</p></div>`}
   </main>`;
 }
 
-// ----- New list
 async function newListFlow() {
-  let factions = S.factionIndex?.files;
-  if (!factions || !factions.length) {
-    showBusy('Fetching faction list…');
-    try {
-      let sha = S.settings.source.branch;
-      let date = '';
-      try {
-        const c = await latestCommit(S.settings.source);
-        sha = c.sha;
-        date = c.date;
-      } catch { /* offline or rate limited */ }
-      factions = await listFactions(S.settings.source, sha);
-      S.factionIndex = { sha, date, files: factions, checkedAt: Date.now() };
-      await store.set('kv', 'factionIndex', S.factionIndex);
-    } finally {
-      hideBusy();
-    }
-  }
-  const draft = { name: '', file: '', limit: 2000 };
+  const idx = await ensureIndex();
+  const draft = { name: '', faction: '', size: 'strike' };
+  newDraft = draft;
   showSheet(
-    () => {
-      const groups = {};
-      for (const f of factions) (groups[f.group] ||= []).push(f);
-      const have = new Set(S.downloaded.map((d) => d.file));
-      return `<div class="sheet-head"><h2>New army list</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-body">
-        <label class="lbl">List name</label>
-        <input id="nlName" placeholder="e.g. Votann 2k – Oathband" value="${esc(draft.name)}">
-        <label class="lbl">Points limit</label>
-        <div class="chips">${[1000, 2000, 3000].map((p) => `<button class="chip ${draft.limit === p ? 'on' : ''}" data-act="nlLimit" data-v="${p}">${p}</button>`).join('')}
-          <input id="nlLimitCustom" class="mini" inputmode="numeric" placeholder="Other" value="${[1000, 2000, 3000].includes(draft.limit) ? '' : draft.limit}"></div>
-        <label class="lbl">Faction</label>
-        ${Object.entries(groups)
-          .map(([g, fs]) => `<div class="fgroup"><div class="fgroup-h">${esc(g)}</div>${fs
-            .map((f) => `<button class="frow ${draft.file === f.file ? 'on' : ''}" data-act="nlFaction" data-file="${esc(f.file)}"><span>${esc(f.name)}</span>${have.has(f.file) ? '<span class="tag">saved</span>' : ''}</button>`)
-            .join('')}</div>`)
-          .join('')}
-      </div>
-      <div class="sheet-foot"><button class="btn primary block" data-act="nlCreate" ${draft.file ? '' : 'disabled'}>Create list</button></div>`;
-    },
+    () => `${head('New army list')}<div class="sheet-body">
+      <label class="lbl">List name</label><input id="nlName" placeholder="e.g. Votann – Hearthband" value="${esc(draft.name)}">
+      <label class="lbl">Battle size</label>
+      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${draft.size === k ? 'on' : ''}" data-act="nlSize" data-v="${k}">${s.label}${k !== 'custom' ? ` · ${s.pts}` : ''}</button>`).join('')}</div>
+      <p class="muted small">${draft.size === 'custom' ? 'Set your own limits after creating the list (⋯ → Battle size & limits).' : `${SIZES[draft.size].pts} pts · ${SIZES[draft.size].dp} DP · ${SIZES[draft.size].enh} enhancements · ${SIZES[draft.size].unit} of each unit (Battleline ×2)`}</p>
+      <label class="lbl">Faction</label>
+      ${idx.factions.map((f) => `<button class="frow ${draft.faction === f.id ? 'on' : ''}" data-act="nlFaction" data-id="${f.id}"><span>${esc(f.n)}</span><span class="muted small">${S.cached.includes(f.id) ? 'saved' : f.units + ' units'}</span></button>`).join('')}
+    </div><div class="sheet-foot"><button class="btn primary block" data-act="nlCreate" ${draft.faction ? '' : 'disabled'}>Create list</button></div>`,
     { tall: true }
   );
-  newListDraft = draft;
 }
-let newListDraft = null;
-
-async function createListFromDraft() {
-  const d = newListDraft;
-  const nameInput = $('#nlName');
-  if (nameInput) d.name = nameInput.value.trim();
-  const custom = $('#nlLimitCustom');
-  if (custom && custom.value.trim()) d.limit = Math.max(1, parseInt(custom.value, 10) || d.limit);
-  if (!d.file) return;
+let newDraft = null;
+function keepDraftName() {
+  const n = $('#nlName');
+  if (n && newDraft) newDraft.name = n.value;
+}
+async function createList() {
+  keepDraftName();
+  const d = newDraft;
+  if (!d.faction) return;
+  let f;
   try {
-    await ensureFaction(d.file);
+    f = await ensureFaction(d.faction);
   } catch (e) {
-    toast(e.message || 'Download failed');
-    return;
+    return toast(e.message);
   }
-  const f = await getFaction(d.file);
-  const list = {
-    id: uid(),
-    name: d.name || `${f.name} ${d.limit}`,
-    factionFile: d.file,
-    factionName: f.name,
-    limit: d.limit,
-    detachmentId: f.detachments.length === 1 ? f.detachments[0].id : '',
-    units: [],
-    created: Date.now(),
-    updated: Date.now(),
-  };
-  S.lists.push(list);
+  const l = { id: uid(), name: d.name.trim() || `${f.n} ${SIZES[d.size].pts}`, factionId: f.id, factionName: f.n, size: d.size, limits: { ...SIZES[d.size] }, detachments: [], disposition: '', units: [], created: Date.now(), updated: Date.now() };
+  delete l.limits.label;
+  S.lists.push(l);
   await save('lists');
   closeAllSheets();
-  S.openListId = list.id;
+  S.openListId = l.id;
   render();
 }
 
-// ----- List builder
+// ---------------------------------------------------------------- Army: builder
 const curList = () => S.lists.find((l) => l.id === S.openListId);
+function touch(l) {
+  l.updated = Date.now();
+  save('lists');
+}
 
 function viewList() {
   const l = curList();
@@ -468,115 +482,124 @@ function viewList() {
     S.openListId = null;
     return viewLists();
   }
-  const f = factionCache.get(l.factionFile);
-  return `<header class="top"><button class="icon back" data-act="backToLists">‹</button>
+  const f = factions.get(l.factionId);
+  return `<header class="top"><button class="icon back" data-act="backToLists" aria-label="Back">‹</button>
     <div class="top-title" data-act="renameList"><div class="tt-name">${esc(l.name)}</div><div class="tt-sub">${esc(l.factionName)}</div></div>
-    <button class="icon" data-act="listMenu">⋯</button></header>
-  <main class="pad" id="listBody">${f ? listBodyHtml(l, f) : '<div class="loading">Loading…</div>'}</main>`;
+    <button class="icon" data-act="listMenu" aria-label="List options">⋯</button></header>
+  <main class="pad" id="listBody">${f ? listBody(l, f) : '<div class="loading">Loading…</div>'}</main>`;
 }
-
 async function hydrateList() {
   const l = curList();
-  if (!l || factionCache.has(l.factionFile)) return;
-  const f = await getFaction(l.factionFile);
-  const body = $('#listBody');
-  if (!body) return;
-  if (!f) {
-    body.innerHTML = `<div class="empty"><p>The data for <b>${esc(l.factionName)}</b> isn't on this device yet.</p>
-      <button class="btn primary" data-act="downloadForList">Download ${esc(l.factionName)}</button></div>`;
-    return;
-  }
-  body.innerHTML = listBodyHtml(l, f);
+  if (!l || factions.has(l.factionId)) return;
+  const f = await getFaction(l.factionId);
+  const b = $('#listBody');
+  if (!b) return;
+  b.innerHTML = f ? listBody(l, f) : `<div class="empty"><p>${esc(l.factionName)} data isn't on this device yet.</p><button class="btn primary" data-act="downloadForList">Download ${esc(l.factionName)}</button></div>`;
 }
 
-function listBodyHtml(l, f) {
+function meter(label, used, max) {
+  const over = used > max;
+  return `<div class="meter ${over ? 'over' : ''}"><div class="m-top"><span>${label}</span><b>${used}<span>/${max}</span></b></div><div class="track"><div class="fill" style="width:${Math.min(100, max ? (used / max) * 100 : 0)}%"></div></div></div>`;
+}
+
+function listBody(l, f) {
+  const L = limitsOf(l);
   const pts = listPts(l, f);
-  const pct = Math.min(100, (pts / l.limit) * 100);
-  const det = l.detachmentId && f.detById.get(l.detachmentId);
+  const dp = listDp(l, f);
+  const enhN = l.units.filter((e) => e.enh).length;
   const issues = validate(l, f);
   const errs = issues.filter((i) => i.level === 'error').length;
-  const groups = groupEntries(l, f);
+  const dets = l.detachments.map((id) => f.detById.get(id)).filter(Boolean);
+  const disp = dispositionsOf(l, f);
   return `
-  <div class="ptsbar ${pts > l.limit ? 'over' : ''}">
-    <div class="ptsnums"><b>${pts}</b> / ${l.limit} pts <span class="muted">· ${l.limit - pts >= 0 ? l.limit - pts + ' left' : pts - l.limit + ' over'}</span></div>
-    <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-  </div>
+  <div class="meters">${meter('Points', pts, L.pts)}${meter('Detachment pts', dp, L.dp)}${meter('Enhancements', enhN, L.enh)}</div>
+  <button class="card dets" data-act="pickDetachments">
+    <div class="muted small">Detachments</div>
+    ${dets.length ? dets.map((d) => `<div class="det-line"><span>${esc(d.n)}</span><span class="tag">${d.dp} DP</span></div>`).join('') : '<div class="warn">Choose detachments…</div>'}
+  </button>
   <div class="row gap">
-    <button class="card det grow" data-act="pickDetachment"><div class="muted small">Detachment</div><div>${det ? esc(det.name) : f.detachments.length ? '<span class="warn">Choose…</span>' : '—'}</div></button>
-    ${f.armyRules.length ? `<button class="card det" data-act="armyRules"><div class="muted small">Army rule</div><div>${esc(f.armyRules[0].name)}</div></button>` : ''}
+    <button class="card det grow" data-act="pickDisposition"><div class="muted small">Force Disposition</div><div>${l.disposition ? esc(l.disposition) : disp.length ? '<span class="warn">Choose…</span>' : '<span class="muted">—</span>'}</div></button>
+    ${f.armyRules.length ? `<button class="card det grow" data-act="armyRules"><div class="muted small">Army rule</div><div>${esc(f.armyRules.map((r) => r.n).join(', '))}</div></button>` : ''}
   </div>
   ${issues.length ? `<div class="issues ${errs ? 'has-err' : ''}"><button class="issues-h" data-act="toggleIssues">${errs ? `⚠ ${plural(errs, 'problem')}` : '✓ Legal'}${issues.length - errs ? ` · ${plural(issues.length - errs, 'note')}` : ''}<span>${S.showIssues ? '▾' : '▸'}</span></button>
     ${S.showIssues ? `<ul>${issues.map((i) => `<li class="${i.level}">${esc(i.msg)}</li>`).join('')}</ul>` : ''}</div>` : l.units.length ? `<div class="issues ok"><div class="issues-h">✓ Legal list</div></div>` : ''}
-  ${groups
-    .map(
-      ([role, entries]) => `<section><h3 class="sec">${esc(role)} <span class="muted">${entries.reduce((t, e) => t + entryPts(e, f), 0)}</span></h3>
-      ${entries
-        .map((e) => {
-          const u = f.unitById.get(e.unitId);
-          const en = e.enhancementId && f.enhById.get(e.enhancementId);
-          const sub = [];
-          if (u && u.models.max > 1) sub.push(`${e.models} models`);
-          if (en) sub.push(`✦ ${esc(en.name)}`);
-          if (e.notes) sub.push(esc(e.notes.split('\n')[0]));
-          return `<button class="entry" data-act="editEntry" data-uid="${e.uid}">
-            <div class="en-main"><div class="en-name">${e.warlord ? '<span class="crown">♛</span>' : ''}${esc(e.name)}${u ? '' : ' <span class="warn">(missing)</span>'}</div>
-            ${sub.length ? `<div class="en-sub">${sub.join(' · ')}</div>` : ''}</div>
-            <div class="en-pts">${entryPts(e, f)}</div></button>`;
-        })
-        .join('')}</section>`
-    )
+  ${groupEntries(l, f)
+    .map(([role, entries]) => `<section><h3 class="sec">${esc(role)} <span class="muted">${entries.reduce((t, e) => t + entryPts(e, f), 0)}</span></h3>
+      ${entries.map((e) => entryRow(e, l, f)).join('')}</section>`)
     .join('')}
-  ${l.units.length ? '' : `<div class="empty small"><p class="muted">No units yet. Tap “Add unit” to start.</p></div>`}
+  ${l.units.length ? '' : `<div class="empty small"><p class="muted">No units yet — tap “Add unit”.</p></div>`}
   <div class="spacer"></div>
   <button class="fab" data-act="addUnit">＋ Add unit</button>`;
 }
 
-function touch(l) {
-  l.updated = Date.now();
-  save('lists');
+function entryRow(e, l, f) {
+  const u = f.unitById.get(e.unitId);
+  const en = e.enh && f.enhById.get(e.enh);
+  const host = e.attachTo && l.units.find((x) => x.uid === e.attachTo);
+  const sub = [];
+  if (u && u.c.length > 1) sub.push(esc(costOpt(u, e).d));
+  if (en) sub.push(`✦ ${esc(en.n)}`);
+  if (e.notes) sub.push(esc(e.notes.split('\n')[0]));
+  return `<button class="entry ${host ? 'attached' : ''}" data-act="editEntry" data-uid="${e.uid}">
+    <div class="en-main"><div class="en-name">${host ? '<span class="muted">↳ </span>' : ''}${e.warlord ? '<span class="crown">♛</span>' : ''}${esc(e.name)}${u ? '' : ' <span class="warn">(missing)</span>'}</div>
+    ${sub.length ? `<div class="en-sub">${sub.join(' · ')}</div>` : ''}</div><div class="en-pts">${entryPts(e, f)}</div></button>`;
 }
 
-// ----- Detachment picker
-async function pickDetachment() {
+function pickDetachments() {
   const l = curList();
-  const f = await getFaction(l.factionFile);
-  if (!f.detachments.length) return toast('No detachments found in the data');
-  let expanded = l.detachmentId || '';
+  const f = factions.get(l.factionId);
+  let open = '';
   showSheet(
-    () => `<div class="sheet-head"><h2>Detachment</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body">${f.detachments
-      .map((d) => {
-        const enh = f.enhancements.filter((e) => e.detachments.includes(d.id));
-        const open = expanded === d.id;
-        return `<div class="det-opt ${l.detachmentId === d.id ? 'on' : ''}">
-          <div class="row"><button class="grow det-name" data-act="detExpand" data-id="${d.id}">${l.detachmentId === d.id ? '● ' : '○ '}${esc(d.name)}<span class="muted"> ${open ? '▾' : '▸'}</span></button>
-          <button class="btn small ${l.detachmentId === d.id ? 'ghost' : 'primary'}" data-act="detChoose" data-id="${d.id}">${l.detachmentId === d.id ? 'Chosen' : 'Choose'}</button></div>
-          ${open ? `<div class="det-rules">${d.rules.map((r) => `<div class="rule"><b>${esc(r.name)}</b><div>${fmtRule(r.text)}</div></div>`).join('') || '<p class="muted">No rule text in the data.</p>'}
-          ${enh.length ? `<div class="muted small">Enhancements</div>${enh.map((e) => `<div class="rule"><b>${esc(e.name)}</b> <span class="pts">${e.pts} pts</span><div>${fmtRule(e.text)}</div></div>`).join('')}` : ''}</div>` : ''}
-        </div>`;
-      })
-      .join('')}</div>`,
-    { tall: true }
+    () => {
+      const L = limitsOf(l);
+      const dp = listDp(l, f);
+      return `${head('Detachments', `<span class="tag big">${dp}/${L.dp} DP</span>`)}<div class="sheet-body">
+      <p class="muted small">Spend up to ${L.dp} Detachment Points. Tap a name to read its rules.</p>
+      ${f.detachments
+        .map((d) => {
+          const on = l.detachments.includes(d.id);
+          const enh = f.enhancements.filter((e) => e.det === d.id);
+          const nStr = f.stratagems.filter((s) => s.det === d.id).length;
+          const isOpen = open === d.id;
+          return `<div class="det-opt ${on ? 'on' : ''}"><div class="row gap">
+            <button class="grow det-name" data-act="detOpen" data-id="${d.id}"><div>${esc(d.n)} <span class="muted">${isOpen ? '▾' : '▸'}</span></div><div class="muted small">${esc(d.fd.join(' · ') || '—')} · ${plural(nStr, 'stratagem')}</div></button>
+            <span class="tag">${d.dp} DP</span>
+            <button class="btn small ${on ? 'primary' : 'ghost'}" data-act="detToggle" data-id="${d.id}">${on ? '✓ In' : 'Add'}</button></div>
+            ${isOpen ? `<div class="det-rules">${d.rules.map((r) => `<div class="rule"><b>${esc(r.n)}</b><div>${rich(r.d)}</div></div>`).join('') || '<p class="muted small">No rule text.</p>'}
+              ${enh.length ? `<div class="muted small">Enhancements</div>${enh.map((e) => `<div class="rule"><b>${esc(e.n)}</b> <span class="pts">${e.pts} pts</span>${e.up ? ' <span class="tag">upgrade</span>' : ''}<div>${rich(e.d)}</div></div>`).join('')}` : ''}</div>` : ''}
+          </div>`;
+        })
+        .join('')}</div>`;
+    },
+    { tall: true, onClose: () => rerender() }
   );
-  detExpandHandler = (id) => {
-    expanded = expanded === id ? '' : id;
+  detOpenHandler = (id) => {
+    open = open === id ? '' : id;
     rerenderTopSheet();
   };
 }
-let detExpandHandler = null;
+let detOpenHandler = null;
 
-// ----- Unit picker
-const picker = { q: '', role: '' };
-async function addUnitSheet() {
+function pickDisposition() {
   const l = curList();
-  const f = await getFaction(l.factionFile);
+  const f = factions.get(l.factionId);
+  const disp = dispositionsOf(l, f);
+  if (!disp.length) return toast('Choose a detachment first');
+  showSheet(() => `${head('Force Disposition')}<div class="sheet-body"><p class="muted small">Granted by your detachments — pick one for the battle.</p>
+    ${disp.map((d) => `<button class="frow ${l.disposition === d ? 'on' : ''}" data-act="setDisposition" data-v="${esc(d)}"><span>${esc(d)}</span><span class="muted small">${esc(l.detachments.map((id) => f.detById.get(id)).filter((x) => x && x.fd.includes(d)).map((x) => x.n).join(', '))}</span></button>`).join('')}</div>`);
+}
+
+// unit picker
+const picker = { q: '', role: '' };
+function addUnitSheet() {
+  const l = curList();
+  const f = factions.get(l.factionId);
   picker.q = '';
   picker.role = '';
   showSheet(
     () => {
-      const roles = [...new Set(f.units.map((u) => u.role))].sort((a, b) => roleRank(a) - roleRank(b));
-      return `<div class="sheet-head"><h2>Add unit</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-sub"><input id="pickQ" type="search" placeholder="Search ${f.units.length} datasheets…" value="${esc(picker.q)}" autocomplete="off">
+      const roles = [...new Set(f.units.filter((u) => !S.settings.hideLegends || !u.legends).map(roleGroup))].sort((a, b) => roleRank(a) - roleRank(b));
+      return `${head('Add unit')}<div class="sheet-sub"><input id="pickQ" type="search" placeholder="Search ${f.units.length} datasheets…" value="${esc(picker.q)}" autocomplete="off">
       <div class="chips scroll"><button class="chip ${picker.role ? '' : 'on'}" data-act="pickRole" data-v="">All</button>${roles.map((r) => `<button class="chip ${picker.role === r ? 'on' : ''}" data-act="pickRole" data-v="${esc(r)}">${esc(r)}</button>`).join('')}
       <button class="chip ${S.settings.hideLegends ? '' : 'on'}" data-act="toggleLegends">Legends</button></div></div>
       <div class="sheet-body" id="pickResults">${pickerResults(f, l)}</div>`;
@@ -584,428 +607,462 @@ async function addUnitSheet() {
     { tall: true }
   );
 }
-
 function pickerResults(f, l) {
   const q = picker.q.toLowerCase();
   const counts = new Map();
   for (const e of l.units) counts.set(e.unitId, (counts.get(e.unitId) || 0) + 1);
-  const units = f.units.filter(
-    (u) => (!picker.role || u.role === picker.role) && (!q || u.name.toLowerCase().includes(q) || u.keywords.some((k) => k.toLowerCase().includes(q))) && (!S.settings.hideLegends || !u.legends)
-  );
-  if (!units.length) return `<p class="muted center">No matching units.</p>`;
+  const units = f.units.filter((u) => (!picker.role || roleGroup(u) === picker.role) && (!q || u.n.toLowerCase().includes(q) || u.kw.some((k) => k.toLowerCase().includes(q))) && (!S.settings.hideLegends || !u.legends));
+  if (!units.length) return '<p class="muted center">No matching units.</p>';
   return units
-    .sort((a, b) => roleRank(a.role) - roleRank(b.role) || a.name.localeCompare(b.name))
+    .sort((a, b) => roleRank(roleGroup(a)) - roleRank(roleGroup(b)) || a.n.localeCompare(b.n))
     .map((u) => {
-      const pts = u.sizes.length ? (u.sizes.length > 1 ? `${u.sizes[0].pts}–${u.sizes[u.sizes.length - 1].pts}` : u.sizes[0].pts) : '?';
+      const pts = u.c.length ? (u.c.length > 1 ? `${u.c[0].pts}–${u.c[u.c.length - 1].pts}` : u.c[0].pts) : '?';
       const n = counts.get(u.id) || 0;
-      return `<div class="pick-row"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}">
-        <div class="pn">${esc(u.name)}${n ? ` <span class="tag">×${n}</span>` : ''}</div>
-        <div class="ps muted">${esc(u.role)}${u.models.max > 1 ? ` · ${u.models.min}${u.models.max !== u.models.min ? '–' + u.models.max : ''} models` : ''}</div></button>
+      return `<div class="pick-row"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}${u.legends ? ' <span class="tag">Legends</span>' : ''}</div>
+        <div class="ps muted">${esc(roleGroup(u))}${u.c.length > 1 ? ' · ' + esc(u.c.map((c) => c.d).join(' / ')) : ''}</div></button>
         <div class="pp">${pts}</div><button class="addbtn" data-act="pickAdd" data-id="${u.id}" aria-label="Add">＋</button></div>`;
     })
     .join('');
 }
-
-function addUnitToList(unitId) {
+function addUnit(id) {
   const l = curList();
-  const f = factionCache.get(l.factionFile);
-  const u = f.unitById.get(unitId);
+  const f = factions.get(l.factionId);
+  const u = f.unitById.get(id);
   if (!u) return;
-  const size = u.sizes[0] || { models: u.models.min, pts: 0 };
-  l.units.push({ uid: uid(), unitId: u.id, name: u.name, models: size.models, enhancementId: '', warlord: false, notes: '', lastPts: size.pts });
+  l.units.push({ uid: uid(), unitId: u.id, name: u.n, cost: 0, enh: '', warlord: false, notes: '', attachTo: '', lastPts: u.c[0]?.pts || 0 });
   touch(l);
-  toast(`Added ${u.name}`);
+  toast(`Added ${u.n}`);
   rerender();
+  const r = $('#pickResults');
+  if (r) r.innerHTML = pickerResults(f, l);
 }
 
-// ----- Entry editor
-function editEntrySheet(entryUid) {
+// entry editor
+function editEntry(entryUid) {
   const l = curList();
-  const f = factionCache.get(l.factionFile);
-  let showAllEnh = false;
+  const f = factions.get(l.factionId);
+  let allEnh = false;
   showSheet(
     () => {
       const e = l.units.find((x) => x.uid === entryUid);
       if (!e) return '';
       const u = f.unitById.get(e.unitId);
-      const canEnh = u && u.character && !u.epic;
-      let enhs = f.enhancements;
-      const filtered = l.detachmentId && enhs.some((x) => x.detachments.length);
-      if (filtered && !showAllEnh) enhs = enhs.filter((x) => !x.detachments.length || x.detachments.includes(l.detachmentId) || x.id === e.enhancementId);
-      const takenElsewhere = new Set(l.units.filter((x) => x.uid !== e.uid && x.enhancementId).map((x) => x.enhancementId));
-      return `<div class="sheet-head"><h2>${esc(e.name)}</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-body">
+      const taken = new Set(l.units.filter((x) => x.uid !== e.uid && x.enh).map((x) => x.enh));
+      let enhs = f.enhancements.filter((x) => allEnh || l.detachments.includes(x.det) || x.id === e.enh);
+      if (u && u.enh.length && !allEnh) enhs = enhs.filter((x) => u.enh.includes(x.id) || x.id === e.enh);
+      const canEnh = u && !u.epic && (u.character || f.enhancements.some((x) => x.up && u.enh.includes(x.id)));
+      const hosts = u ? l.units.filter((x) => x.uid !== e.uid && u.leads.includes(x.unitId)) : [];
+      const auto = entryPts({ ...e, ptsOverride: null }, f);
+      return `${head(e.name)}<div class="sheet-body">
         <div class="big-pts">${entryPts(e, f)} <span>pts</span></div>
-        ${u && u.sizes.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.sizes.map((s) => `<button class="chip ${s.models === e.models ? 'on' : ''}" data-act="setSize" data-uid="${e.uid}" data-v="${s.models}">${s.models} models · ${s.pts}</button>`).join('')}</div>` : ''}
-        ${u && u.conditionalCost ? `<p class="muted small">Some points changes in the data depend on other choices; check the total against your codex/app.</p>` : ''}
+        ${u && u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => `<button class="chip ${(e.cost || 0) === i ? 'on' : ''}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}</button>`).join('')}</div>` : ''}
         ${u && u.character ? `<label class="toggle"><input type="checkbox" data-act="setWarlord" data-uid="${e.uid}" ${e.warlord ? 'checked' : ''}><span>Warlord</span></label>` : ''}
-        ${canEnh && f.enhancements.length ? `<label class="lbl">Enhancement</label>
-          <div class="enh-list"><button class="enh ${e.enhancementId ? '' : 'on'}" data-act="setEnh" data-uid="${e.uid}" data-v="">None</button>
-          ${enhs.map((x) => `<button class="enh ${e.enhancementId === x.id ? 'on' : ''} ${takenElsewhere.has(x.id) ? 'taken' : ''}" data-act="setEnh" data-uid="${e.uid}" data-v="${x.id}"><span>${esc(x.name)}${takenElsewhere.has(x.id) ? ' <span class="muted">(taken)</span>' : ''}</span><span class="pts">+${x.pts}</span></button>`).join('')}</div>
-          ${filtered ? `<button class="link" data-act="toggleAllEnh">${showAllEnh ? 'Only my detachment' : 'Show all detachments'}</button>` : ''}` : ''}
-        <details class="adv"${e.ptsOverride != null && e.ptsOverride !== '' ? ' open' : ''}><summary>Points look wrong? Set them manually</summary>
-          <div class="row gap"><input inputmode="numeric" data-bind="ptsOverride" data-uid="${e.uid}" placeholder="Auto (${(() => { const c = { ...e, ptsOverride: null }; return entryPts(c, f); })()})" value="${e.ptsOverride ?? ''}"></div>
-          <p class="muted small">Overrides this unit's total (including enhancement) until cleared.</p></details>
+        ${u && u.leads.length ? `<label class="lbl">${u.sup ? 'Support' : 'Leading'}</label>
+          ${hosts.length ? `<div class="enh-list"><button class="enh ${e.attachTo ? '' : 'on'}" data-act="setAttach" data-uid="${e.uid}" data-v="">Not attached</button>${hosts.map((h) => `<button class="enh ${e.attachTo === h.uid ? 'on' : ''}" data-act="setAttach" data-uid="${e.uid}" data-v="${h.uid}"><span>${esc(h.name)}</span><span class="muted small">${entryPts(h, f)} pts</span></button>`).join('')}</div>` : `<p class="muted small">Can join: ${esc(u.leads.map((id) => f.unitById.get(id)?.n).filter(Boolean).join(', ') || '—')}. Add one of those to attach.</p>`}` : ''}
+        ${canEnh ? `<label class="lbl">Enhancement</label>
+          ${l.detachments.length || allEnh ? `<div class="enh-list"><button class="enh ${e.enh ? '' : 'on'}" data-act="setEnh" data-uid="${e.uid}" data-v="">None</button>
+          ${enhs.map((x) => `<button class="enh ${e.enh === x.id ? 'on' : ''} ${taken.has(x.id) ? 'taken' : ''}" data-act="setEnh" data-uid="${e.uid}" data-v="${x.id}"><span>${esc(x.n)}<span class="muted small"> · ${esc(x.dn)}${taken.has(x.id) ? ' · taken' : ''}</span></span><span class="pts">+${x.pts}</span></button>`).join('') || '<p class="muted small">None available from your detachments.</p>'}</div>` : '<p class="muted small">Choose a detachment to see enhancements.</p>'}
+          <button class="link" data-act="toggleAllEnh">${allEnh ? 'Only valid choices' : 'Show every enhancement'}</button>` : ''}
+        <details class="adv" ${e.ptsOverride != null && e.ptsOverride !== '' ? 'open' : ''}><summary>Points look wrong? Set them manually</summary>
+          <input inputmode="numeric" data-bind="ptsOverride" data-uid="${e.uid}" placeholder="Auto (${auto})" value="${e.ptsOverride ?? ''}"><p class="muted small">Overrides this unit's total until cleared.</p></details>
         <label class="lbl">Wargear / notes</label>
-        <textarea data-bind="entryNotes" data-uid="${e.uid}" rows="3" placeholder="e.g. 2× ion blaster, Theyn with plasma">${esc(e.notes)}</textarea>
-        <div class="row gap wrap">
-          <button class="btn ghost grow" data-act="viewUnit" data-id="${e.unitId}">Datasheet</button>
+        <textarea data-bind="entryNotes" data-uid="${e.uid}" rows="3" placeholder="e.g. Theyn with ion blaster">${esc(e.notes)}</textarea>
+        <div class="row gap wrap mt"><button class="btn ghost grow" data-act="viewUnit" data-id="${e.unitId}">Datasheet</button>
           <button class="btn ghost grow" data-act="dupEntry" data-uid="${e.uid}">Duplicate</button>
-          <button class="btn danger grow" data-act="removeEntry" data-uid="${e.uid}">Remove</button>
-        </div>
+          <button class="btn danger grow" data-act="removeEntry" data-uid="${e.uid}">Remove</button></div>
       </div>`;
     },
     { onClose: () => rerender() }
   );
-  toggleAllEnhHandler = () => {
-    showAllEnh = !showAllEnh;
+  allEnhHandler = () => {
+    allEnh = !allEnh;
     rerenderTopSheet();
   };
 }
-let toggleAllEnhHandler = null;
+let allEnhHandler = null;
 
-// ----- Datasheet
-function datasheetHtml(u, f) {
-  const P = u.profiles;
-  const statRow = (p) => `<tr><td class="mname">${P.unit.length > 1 ? esc(p.name) : ''}</td>${['M', 'T', 'SV', 'W', 'LD', 'OC'].map((k) => `<td>${esc(p[k] ?? '-')}</td>`).join('')}</tr>`;
-  const wTable = (ws, kind) =>
-    ws.length
-      ? `<h3 class="ds-h">${kind === 'ranged' ? '⌖ Ranged weapons' : '⚔ Melee weapons'}</h3>
-      <table class="wtab"><thead><tr><th class="wn"></th><th>Range</th><th>A</th><th>${kind === 'ranged' ? 'BS' : 'WS'}</th><th>S</th><th>AP</th><th>D</th></tr></thead><tbody>
-      ${ws.map((w) => `<tr><td class="wn">${esc(w.name)}${w.kw ? `<div class="wkw">${esc(w.kw)}</div>` : ''}</td><td>${esc(w.range)}</td><td>${esc(w.A)}</td><td>${esc(w.skill)}</td><td>${esc(w.S)}</td><td>${esc(w.AP)}</td><td>${esc(w.D)}</td></tr>`).join('')}
-      </tbody></table>`
-      : '';
-  const abilities = P.abilities.filter((a) => !/^invulnerable save$/i.test(a.name));
-  return `
-  <div class="ds-kw">${u.keywords.map((k) => `<span class="kwchip">${esc(k)}</span>`).join('')}</div>
-  <table class="stats"><thead><tr><th></th><th>M</th><th>T</th><th>SV</th><th>W</th><th>LD</th><th>OC</th></tr></thead><tbody>${P.unit.map(statRow).join('')}</tbody></table>
-  ${u.invuln ? `<div class="inv">🛡 Invulnerable save <b>${esc(u.invuln)}</b></div>` : ''}
-  ${wTable(P.ranged, 'ranged')}
-  ${wTable(P.melee, 'melee')}
-  ${u.rules.length ? `<h3 class="ds-h">Core & faction rules</h3><div class="rulechips">${u.rules.map((r, i) => `<details class="rc"><summary>${esc(r.name)}</summary><div>${fmtRule(r.text) || '<span class="muted">—</span>'}</div></details>`).join('')}</div>` : ''}
-  ${abilities.length ? `<h3 class="ds-h">Abilities</h3>${abilities.map((a) => `<div class="rule"><b>${esc(a.name)}</b><div>${fmtRule(a.text)}</div></div>`).join('')}` : ''}
-  ${P.other.length ? P.other.map((o) => `<div class="rule"><b>${esc(o.type)}${o.name && o.name !== o.type ? ': ' + esc(o.name) : ''}</b><div>${Object.entries(o.chars).map(([k, v]) => `${esc(k)}: ${fmtRule(v)}`).join('<br>')}</div></div>`).join('') : ''}
-  <h3 class="ds-h">Unit composition & points</h3>
-  ${u.models.list.length ? `<ul class="comp">${u.models.list.map((m) => `<li>${m.min === m.max ? m.min : `${m.min}–${m.max}`} × ${esc(m.name)}</li>`).join('')}</ul>` : ''}
-  <div class="chips">${u.sizes.map((s) => `<span class="chip static">${s.models} model${s.models === 1 ? '' : 's'} · <b>${s.pts}</b> pts</span>`).join('')}</div>
-  ${u.factionKeywords.length ? `<p class="muted small">Faction: ${esc(u.factionKeywords.join(', '))}</p>` : ''}`;
+// datasheet
+function datasheet(u, f) {
+  const ab = (t) => u.ab.filter((a) => a.t === t);
+  const named = (a) => {
+    const r = a.ref ? f.abilities[a.ref] : a;
+    return { n: (r?.n || a.n || '') + (a.p ? ` ${a.p}` : ''), d: r?.d || a.d || '' };
+  };
+  const chipList = (list) => list.map((a) => named(a)).map((a) => `<details class="rc"><summary>${esc(a.n)}</summary><div>${rich(a.d) || '<span class="muted">—</span>'}</div></details>`).join('');
+  const wt = (kind) => {
+    const ws = u.w.filter((w) => w.t === kind);
+    if (!ws.length) return '';
+    return `<h3 class="ds-h">${kind === 'ranged' ? '⌖ Ranged weapons' : '⚔ Melee weapons'}</h3><table class="wtab"><thead><tr><th class="wn"></th><th>Range</th><th>A</th><th>${kind === 'ranged' ? 'BS' : 'WS'}</th><th>S</th><th>AP</th><th>D</th></tr></thead><tbody>
+      ${ws.map((w) => `<tr><td class="wn">${esc(w.n)}${w.k ? `<div class="wkw">${esc(plain(w.k))}</div>` : ''}</td><td>${esc(w.r)}</td><td>${esc(w.A)}</td><td>${esc(w.s)}</td><td>${esc(w.S)}</td><td>${esc(w.AP)}</td><td>${esc(w.D)}</td></tr>`).join('')}</tbody></table>`;
+  };
+  const other = u.ab.filter((a) => !['Core', 'Faction', 'Datasheet', 'Wargear'].includes(a.t));
+  const leadNames = u.leads.map((id) => f.unitById.get(id)?.n).filter(Boolean);
+  const ledBy = u.ledBy.map((id) => f.unitById.get(id)?.n).filter(Boolean);
+  return `<div class="ds-kw">${u.kw.map((k) => `<span class="kwchip">${esc(k)}</span>`).join('')}</div>
+  <table class="stats"><thead><tr><th></th><th>M</th><th>T</th><th>SV</th><th>W</th><th>LD</th><th>OC</th></tr></thead><tbody>
+  ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => `<td>${esc(m[k] || '-')}</td>`).join('')}</tr>`).join('')}</tbody></table>
+  ${u.m.filter((m) => m.inv).map((m) => `<div class="inv">🛡 Invulnerable save <b>${esc(m.inv)}</b>${u.m.length > 1 ? ` (${esc(m.n)})` : ''}${m.invd ? ` — ${rich(m.invd)}` : ''}</div>`).join('')}
+  ${wt('ranged')}${wt('melee')}
+  ${ab('Core').length ? `<h3 class="ds-h">Core</h3><div class="rulechips">${chipList(ab('Core'))}</div>` : ''}
+  ${ab('Faction').length ? `<h3 class="ds-h">Faction</h3><div class="rulechips">${chipList(ab('Faction'))}</div>` : ''}
+  ${ab('Datasheet').length ? `<h3 class="ds-h">Abilities</h3>${ab('Datasheet').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
+  ${ab('Wargear').length ? `<h3 class="ds-h">Wargear abilities</h3>${ab('Wargear').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
+  ${other.length ? other.map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('') : ''}
+  ${u.dmg ? `<div class="rule"><b>Damaged: ${esc(u.dmg.w)} wounds remaining</b><div>${rich(u.dmg.d)}</div></div>` : ''}
+  ${leadNames.length || u.lh ? `<h3 class="ds-h">${u.sup ? 'Support' : 'Leader'}</h3><div class="rule">${u.lh ? `<div>${rich(u.lh)}</div>` : ''}${leadNames.length ? `<div>${leadNames.map((n) => `■ ${esc(n)}`).join('<br>')}</div>` : ''}${u.lf ? `<div class="muted small">${rich(u.lf)}</div>` : ''}</div>` : ''}
+  ${ledBy.length ? `<p class="small muted">Can be led by: ${esc(ledBy.join(', '))}</p>` : ''}
+  ${u.tr ? `<h3 class="ds-h">Transport</h3><div class="rule">${rich(u.tr)}</div>` : ''}
+  <h3 class="ds-h">Composition & wargear</h3>
+  ${u.comp.length ? `<div class="rule">${u.comp.map(rich).join('<br>')}</div>` : ''}
+  ${u.load ? `<div class="rule">${rich(u.load)}</div>` : ''}
+  ${u.opt.length ? `<div class="rule"><b>Wargear options</b><ul class="opts">${u.opt.map((o) => `<li>${rich(o)}</li>`).join('')}</ul></div>` : ''}
+  <h3 class="ds-h">Points</h3><div class="chips">${u.c.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('') || '<span class="muted">—</span>'}</div>
+  ${u.mkw.length ? `<p class="muted small">${esc(u.mkw.join(' · '))}</p>` : ''}
+  <p class="muted small">Faction keywords: ${esc(u.fkw.join(', '))}${u.src ? ` · Source: ${esc(u.src)}` : ''}</p>
+  ${u.link ? `<p class="small"><a href="${esc(u.link)}" target="_blank" rel="noopener">View on Wahapedia ↗</a></p>` : ''}`;
 }
-
-function viewUnitSheet(unitId, canAdd) {
+function viewUnit(id, canAdd, factionId) {
   const l = curList();
-  const f = l && factionCache.get(l.factionFile);
-  const u = f && f.unitById.get(unitId);
+  const f = factions.get(factionId || l?.factionId);
+  const u = f && f.unitById.get(id);
   if (!u) return;
-  showSheet(
-    () => `<div class="sheet-head"><h2>${esc(u.name)}</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body ds">${datasheetHtml(u, f)}</div>
-    ${canAdd ? `<div class="sheet-foot"><button class="btn primary block" data-act="pickAdd" data-id="${u.id}" data-close="1">＋ Add to list</button></div>` : ''}`,
-    { tall: true }
-  );
+  showSheet(() => `${head(u.n)}<div class="sheet-body ds">${datasheet(u, f)}</div>${canAdd && l ? `<div class="sheet-foot"><button class="btn primary block" data-act="pickAdd" data-id="${u.id}" data-close="1">＋ Add to list</button></div>` : ''}`, { tall: true });
 }
 
-// ----- list menu
 function listMenu() {
   const l = curList();
+  showSheet(() => `${head(l.name)}<div class="sheet-body menu">
+    <button data-act="shareText">📋 Share as text</button>
+    <button data-act="shareCode">🔗 Share code (for a friend's Muster)</button>
+    <button data-act="stratsForList">📜 Stratagems for this list</button>
+    <button data-act="renameList">✎ Rename</button>
+    <button data-act="editLimits">◎ Battle size & limits</button>
+    <button data-act="dupList">⧉ Duplicate list</button>
+    <button class="danger-text" data-act="deleteList">🗑 Delete list</button></div>`);
+}
+
+function editLimitsSheet() {
+  const l = curList();
+  showSheet(() => {
+    const L = limitsOf(l);
+    return `${head('Battle size & limits')}<div class="sheet-body">
+      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${l.size === k ? 'on' : ''}" data-act="setSize" data-v="${k}">${s.label}</button>`).join('')}</div>
+      <div class="grid2 mt">
+        <label>Points<input inputmode="numeric" data-bind="limit" data-k="pts" value="${L.pts}"></label>
+        <label>Detachment pts<input inputmode="numeric" data-bind="limit" data-k="dp" value="${L.dp}"></label>
+        <label>Enhancements<input inputmode="numeric" data-bind="limit" data-k="enh" value="${L.enh}"></label>
+        <label>Max per unit<input inputmode="numeric" data-bind="limit" data-k="unit" value="${L.unit}"></label>
+      </div><p class="muted small">Battleline units can be taken twice the max. Epic Heroes once.</p></div>`;
+  }, { onClose: () => rerender() });
+}
+
+// ---------------------------------------------------------------- Stratagems
+function phaseKeys(ph) {
+  const p = (ph || '').toLowerCase();
+  if (p.includes('any phase')) return PHASES.map((x) => x.k);
+  const out = [];
+  if (p.includes('command')) out.push('command');
+  if (p.includes('movement') || p.includes('"move"')) out.push('movement');
+  if (p.includes('shoot')) out.push('shooting');
+  if (p.includes('charge')) out.push('charge');
+  if (p.includes('fight')) out.push('fight');
+  return out.length ? out : PHASES.map((x) => x.k);
+}
+function turnKey(t) {
+  const s = (t || '').toLowerCase();
+  if (s.startsWith('your')) return 'yours';
+  if (s.startsWith('opponent')) return 'theirs';
+  return 'either';
+}
+
+function stratContext() {
+  const st = S.strat;
+  if (st.side === 'core') return { title: 'Core stratagems', factionId: '', dets: [], core: true };
+  if (st.side === 'mine') {
+    const l = S.lists.find((x) => x.id === st.listId) || S.lists[0];
+    if (!l) return { title: 'My army', none: 'Make an army list first, or switch to Opponent to browse any faction.' };
+    st.listId = l.id;
+    return { title: l.name, factionId: l.factionId, dets: l.detachments, list: l };
+  }
+  return { title: 'Opponent', factionId: st.oppFaction, dets: st.oppDets, opp: true };
+}
+
+function viewStrats() {
+  const st = S.strat;
+  const ctx = stratContext();
+  const g = activeGame();
+  return `<header class="top"><div class="brand"><span class="logo">📜</span> Stratagems</div><div class="grow"></div>${gear}</header>
+  <main class="pad">
+    <div class="seg">${[['mine', 'Mine'], ['opp', 'Opponent'], ['core', 'Core only']].map(([k, n]) => `<button class="${st.side === k ? 'on' : ''}" data-act="stSide" data-v="${k}">${n}</button>`).join('')}</div>
+    <div id="stCtx">${stratCtxHtml(ctx)}</div>
+    <input id="stQ" type="search" placeholder="Search stratagems…" value="${esc(st.q)}" autocomplete="off">
+    <div class="chips scroll mt"><button class="chip ${st.phase ? '' : 'on'}" data-act="stPhase" data-v="">All phases</button>${PHASES.map((p) => `<button class="chip ${st.phase === p.k ? 'on' : ''}" data-act="stPhase" data-v="${p.k}">${p.label}</button>`).join('')}</div>
+    <div class="chips scroll mt"><button class="chip ${st.turn ? '' : 'on'}" data-act="stTurn" data-v="">Any turn</button><button class="chip ${st.turn === 'yours' ? 'on' : ''}" data-act="stTurn" data-v="yours">Your turn</button><button class="chip ${st.turn === 'theirs' ? 'on' : ''}" data-act="stTurn" data-v="theirs">Opponent's turn</button>
+      ${st.side !== 'core' ? `<button class="chip ${st.core ? 'on' : ''}" data-act="stCore">+ Core</button><button class="chip ${st.allDets ? 'on' : ''}" data-act="stAll">All detachments</button>` : ''}</div>
+    ${g ? `<p class="muted small mt">Game in progress — “Use” spends CP from ${esc(g.players[st.side === 'opp' ? 1 : 0].name)} (${g.players[st.side === 'opp' ? 1 : 0].cp} CP).</p>` : ''}
+    <div id="stList" class="mt"><div class="loading">Loading…</div></div>
+  </main>`;
+}
+
+function stratCtxHtml(ctx) {
+  const st = S.strat;
+  if (ctx.none) return `<p class="muted">${esc(ctx.none)}</p>`;
+  if (st.side === 'mine') {
+    return `<select data-bind="stList">${S.lists.map((l) => `<option value="${l.id}" ${l.id === st.listId ? 'selected' : ''}>${esc(l.name)} — ${esc(l.factionName)}</option>`).join('')}</select>`;
+  }
+  if (st.side === 'opp') {
+    const f = factions.get(st.oppFaction);
+    return `<button class="card det block-btn" data-act="stOppPick"><div class="muted small">Opponent's army</div><div>${f ? esc(f.n) : '<span class="warn">Choose faction…</span>'}${f && st.oppDets.length ? ' · ' + esc(st.oppDets.map((id) => f.detById.get(id)?.n).filter(Boolean).join(' + ')) : ''}</div></button>`;
+  }
+  return '';
+}
+
+async function hydrateStrats() {
+  const el = $('#stList');
+  if (!el) return;
+  const st = S.strat;
+  const ctx = stratContext();
+  if (ctx.none) {
+    el.innerHTML = '';
+    return;
+  }
+  if (!S.core) S.core = (await data.cachedCore()) || (await data.downloadCore().catch(() => null));
+  let f = null;
+  if (ctx.factionId) f = await getFaction(ctx.factionId);
+  if (ctx.factionId && !f) {
+    el.innerHTML = `<div class="empty small"><button class="btn primary" data-act="stDownload" data-id="${ctx.factionId}">Download faction data</button></div>`;
+    return;
+  }
+  if (st.side === 'opp' && !st.oppFaction) {
+    el.innerHTML = '<p class="muted center">Choose your opponent’s faction to see their stratagems.</p>';
+    return;
+  }
+  const list = [];
+  if (f) {
+    for (const s of f.stratagems) {
+      if (st.allDets || !s.det || ctx.dets.includes(s.det)) list.push(s);
+    }
+  }
+  if ((st.side === 'core' || st.core) && S.core) list.push(...S.core.stratagems.map((s) => ({ ...s, isCore: true })));
+  const q = st.q.toLowerCase();
+  const filtered = list.filter((s) => {
+    if (st.phase && !phaseKeys(s.ph).includes(st.phase)) return false;
+    if (st.turn) {
+      const t = turnKey(s.turn);
+      if (t !== 'either' && t !== st.turn) return false;
+    }
+    if (q && !(s.n.toLowerCase().includes(q) || plain(s.d).toLowerCase().includes(q))) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    el.innerHTML = `<p class="muted center">${!ctx.dets.length && st.side !== 'core' && !st.allDets ? 'No detachments chosen — tap “All detachments” or pick some.' : 'No stratagems match.'}</p>`;
+    return;
+  }
+  // group by first phase
+  const order = (s) => {
+    const k = phaseKeys(s.ph);
+    return k.length > 1 && k.length === PHASES.length ? 5 : PHASES.findIndex((p) => p.k === k[0]);
+  };
+  filtered.sort((a, b) => order(a) - order(b) || (a.isCore ? 1 : 0) - (b.isCore ? 1 : 0) || a.n.localeCompare(b.n));
+  const g = activeGame();
+  let lastGroup = null;
+  el.innerHTML = filtered
+    .map((s) => {
+      const grp = order(s) === 5 ? 'Any phase' : PHASES[order(s)]?.label + ' phase';
+      const hdr = grp !== lastGroup ? `<h3 class="sec">${esc(grp)}</h3>` : '';
+      lastGroup = grp;
+      const open = st.open[s.id];
+      const tk = turnKey(s.turn);
+      return `${hdr}<div class="strat ${s.isCore ? 'core' : ''} ${open ? 'open' : ''}">
+        <button class="st-head" data-act="stToggle" data-id="${esc(s.id)}">
+          <div class="st-main"><div class="st-name">${esc(s.n)}</div><div class="st-type">${esc(s.isCore ? s.type || 'Core' : s.dn || s.type)}</div>
+          <div class="st-when"><span class="turn ${tk}">${esc(s.turn || '—')}</span> · ${esc(s.ph || '')}</div></div>
+          <div class="cp">${esc(s.cp || '–')}<span>CP</span></div></button>
+        ${open ? `<div class="st-body">${rich(s.d)}${g && s.cp !== '' ? `<button class="btn small primary mt" data-act="stUse" data-cp="${esc(s.cp)}" data-n="${esc(s.n)}">Use (−${esc(s.cp)} CP)</button>` : ''}</div>` : ''}
+      </div>`;
+    })
+    .join('');
+}
+
+async function oppPickSheet() {
+  const idx = await ensureIndex();
+  const st = S.strat;
   showSheet(
-    () => `<div class="sheet-head"><h2>${esc(l.name)}</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body menu">
-      <button data-act="shareText">📋 Share as text</button>
-      <button data-act="shareCode">🔗 Share code (for friends' Muster)</button>
-      <button data-act="renameList">✎ Rename</button>
-      <button data-act="setLimit">◎ Points limit (${l.limit})</button>
-      <button data-act="dupList">⧉ Duplicate list</button>
-      <button data-act="refreshListData">↻ Re-download ${esc(l.factionName)} data</button>
-      <button class="danger-text" data-act="deleteList">🗑 Delete list</button>
-    </div>`
+    () => {
+      const f = factions.get(st.oppFaction);
+      return `${head("Opponent's army")}<div class="sheet-body">
+        <label class="lbl">Faction</label>
+        <select data-bind="oppFaction"><option value="">Choose…</option>${idx.factions.map((x) => `<option value="${x.id}" ${x.id === st.oppFaction ? 'selected' : ''}>${esc(x.n)}</option>`).join('')}</select>
+        ${f ? `<label class="lbl">Their detachments</label>${f.detachments.map((d) => `<button class="frow ${st.oppDets.includes(d.id) ? 'on' : ''}" data-act="oppDet" data-id="${d.id}"><span>${st.oppDets.includes(d.id) ? '✓ ' : ''}${esc(d.n)}</span><span class="muted small">${d.dp} DP</span></button>`).join('')}` : st.oppFaction ? '<p class="muted">Loading…</p>' : ''}
+      </div><div class="sheet-foot"><button class="btn primary block" data-act="closeSheet">Done</button></div>`;
+    },
+    { tall: true, onClose: () => rerender() }
   );
 }
 
-// ---------------------------------------------------------------- Battle tracker
+// ---------------------------------------------------------------- Battle
 const activeGame = () => S.games.find((g) => g.id === S.activeGameId && !g.finished);
-
-function playerTotals(p, caps) {
+function totals(p, caps) {
   const pri = Math.min(caps.primary, p.primary.reduce((a, b) => a + (+b || 0), 0));
   const sec = Math.min(caps.secondary, p.secondary.reduce((a, b) => a + (+b || 0), 0));
   const br = p.battleReady ? caps.battleReady : 0;
   return { pri, sec, br, total: Math.min(caps.total, pri + sec + br) };
 }
-
+function stepper(label, value, key) {
+  return `<div class="stepper"><span class="st-l">${esc(label)}</span><button class="st-b" data-act="step" data-k="${key}" data-d="-1">−</button><input class="st-v" inputmode="numeric" data-bind="stepVal" data-k="${key}" value="${+value || 0}"><button class="st-b" data-act="step" data-k="${key}" data-d="1">+</button></div>`;
+}
 function viewBattle() {
   const g = activeGame();
   if (!g) return viewBattleHome();
-  const caps = g.caps;
   const r = g.round;
-  const T = g.players.map((p) => playerTotals(p, caps));
+  const T = g.players.map((p) => totals(p, g.caps));
   const lead = T[0].total === T[1].total ? -1 : T[0].total > T[1].total ? 0 : 1;
-  return `<header class="top"><div class="top-title"><div class="tt-name">${esc(g.mission || 'Battle')}</div><div class="tt-sub">Battle round ${r} of 5</div></div>
-    <button class="icon" data-act="gameMenu">⋯</button></header>
+  return `<header class="top"><div class="top-title"><div class="tt-name">${esc(g.mission || 'Battle')}</div><div class="tt-sub">Battle round ${r} of 5</div></div><button class="icon" data-act="gameMenu" aria-label="Game options">⋯</button></header>
   <main class="pad battle">
     <div class="rounds">${[1, 2, 3, 4, 5].map((n) => `<button class="rnd ${n === r ? 'on' : ''} ${n < r ? 'done' : ''}" data-act="setRound" data-v="${n}">${n}</button>`).join('')}</div>
-    <div class="players">
-    ${g.players
-      .map((p, i) => {
-        const t = T[i];
-        return `<div class="pcard ${lead === i ? 'lead' : ''}">
-        <div class="pc-head"><button class="pc-name" data-act="renamePlayer" data-i="${i}">${esc(p.name)}</button><div class="pc-fac muted">${esc(p.faction || '')}</div></div>
-        <div class="pc-total"><b>${t.total}</b><span>VP</span></div>
-        <div class="pc-split muted">P ${t.pri} · S ${t.sec}${p.battleReady ? ` · BR ${t.br}` : ''}</div>
-        ${stepper('CP', p.cp, `cp:${i}`)}
-        ${stepper(`Primary R${r}`, p.primary[r - 1], `pri:${i}`)}
-        ${stepper(`Secondary R${r}`, p.secondary[r - 1], `sec:${i}`)}
-        <input class="secnote" data-bind="secNote" data-i="${i}" placeholder="Secondaries (e.g. Assassination, Engage)" value="${esc(p.secNames || '')}">
-        <label class="toggle small"><input type="checkbox" data-act="toggleBR" data-i="${i}" ${p.battleReady ? 'checked' : ''}><span>Battle ready (+${caps.battleReady})</span></label>
-        ${p.listId ? `<button class="link" data-act="openPlayerList" data-i="${i}">View army list</button>` : ''}
-      </div>`;
-      })
-      .join('')}
-    </div>
-    <div class="row gap"><button class="btn ghost grow" data-act="cpBoth">+1 CP each</button>
-    ${r < 5 ? `<button class="btn primary grow" data-act="nextRound">Next round ›</button>` : `<button class="btn primary grow" data-act="endGame">Finish game</button>`}</div>
+    <div class="players">${g.players
+      .map((p, i) => `<div class="pcard ${lead === i ? 'lead' : ''}">
+        <button class="pc-name" data-act="renamePlayer" data-i="${i}">${esc(p.name)}</button><div class="pc-fac muted">${esc(p.faction || '')}</div>
+        <div class="pc-total"><b>${T[i].total}</b><span>VP</span></div><div class="pc-split muted">P ${T[i].pri} · S ${T[i].sec}${p.battleReady ? ` · BR ${T[i].br}` : ''}</div>
+        ${stepper('CP', p.cp, `cp:${i}`)}${stepper(`Primary R${r}`, p.primary[r - 1], `pri:${i}`)}${stepper(`Secondary R${r}`, p.secondary[r - 1], `sec:${i}`)}
+        <input class="secnote" data-bind="secNote" data-i="${i}" placeholder="Secondaries" value="${esc(p.secNames || '')}">
+        <label class="toggle small"><input type="checkbox" data-act="toggleBR" data-i="${i}" ${p.battleReady ? 'checked' : ''}><span>Battle ready (+${g.caps.battleReady})</span></label>
+        <div class="pc-links">${p.listId ? `<button class="link" data-act="openPlayerList" data-i="${i}">Army</button>` : ''}<button class="link" data-act="playerStrats" data-i="${i}">Stratagems</button></div>
+      </div>`)
+      .join('')}</div>
+    <div class="row gap"><button class="btn ghost grow" data-act="cpBoth">+1 CP each</button>${r < 5 ? `<button class="btn primary grow" data-act="nextRound">Next round ›</button>` : `<button class="btn primary grow" data-act="endGame">Finish game</button>`}</div>
+    ${g.log && g.log.length ? `<h3 class="sec">CP spent</h3><ul class="cplog">${g.log.slice(-8).reverse().map((x) => `<li><span class="muted">R${x.r}</span> ${esc(g.players[x.p].name)}: ${esc(x.n)} <b>−${x.cp}</b></li>`).join('')}</ul>` : ''}
     <h3 class="sec">Scoreboard</h3>
-    <table class="score"><thead><tr><th>Rnd</th><th colspan="2">${esc(g.players[0].name)}</th><th colspan="2">${esc(g.players[1].name)}</th></tr>
-      <tr class="sub"><th></th><th>Pri</th><th>Sec</th><th>Pri</th><th>Sec</th></tr></thead><tbody>
-      ${[0, 1, 2, 3, 4].map((k) => `<tr class="${k === r - 1 ? 'cur' : ''}"><td>${k + 1}</td><td>${g.players[0].primary[k] || 0}</td><td>${g.players[0].secondary[k] || 0}</td><td>${g.players[1].primary[k] || 0}</td><td>${g.players[1].secondary[k] || 0}</td></tr>`).join('')}
-      <tr class="tot"><td>Σ</td><td>${T[0].pri}</td><td>${T[0].sec}</td><td>${T[1].pri}</td><td>${T[1].sec}</td></tr>
-    </tbody></table>
-    <p class="muted small center">Caps: primary ${caps.primary}, secondary ${caps.secondary}, total ${caps.total}. Change them in Data → Scoring.</p>
+    <table class="score"><thead><tr><th>Rnd</th><th colspan="2">${esc(g.players[0].name)}</th><th colspan="2">${esc(g.players[1].name)}</th></tr><tr class="sub"><th></th><th>Pri</th><th>Sec</th><th>Pri</th><th>Sec</th></tr></thead><tbody>
+    ${[0, 1, 2, 3, 4].map((k) => `<tr class="${k === r - 1 ? 'cur' : ''}"><td>${k + 1}</td><td>${g.players[0].primary[k] || 0}</td><td>${g.players[0].secondary[k] || 0}</td><td>${g.players[1].primary[k] || 0}</td><td>${g.players[1].secondary[k] || 0}</td></tr>`).join('')}
+    <tr class="tot"><td>Σ</td><td>${T[0].pri}</td><td>${T[0].sec}</td><td>${T[1].pri}</td><td>${T[1].sec}</td></tr></tbody></table>
+    <p class="muted small center">Caps: primary ${g.caps.primary}, secondary ${g.caps.secondary}, total ${g.caps.total} — change in ⚙ Settings.</p>
   </main>`;
 }
-
-function stepper(label, value, key) {
-  return `<div class="stepper"><span class="st-l">${esc(label)}</span>
-    <button class="st-b" data-act="step" data-k="${key}" data-d="-1">−</button>
-    <input class="st-v" inputmode="numeric" data-bind="stepVal" data-k="${key}" value="${+value || 0}">
-    <button class="st-b" data-act="step" data-k="${key}" data-d="1">+</button></div>`;
-}
-
 function viewBattleHome() {
   const past = S.games.filter((g) => g.finished).sort((a, b) => b.created - a.created);
-  return `<header class="top"><div class="brand"><span class="logo">⚔</span> Battle</div></header>
-  <main class="pad">
+  return `<header class="top"><div class="brand"><span class="logo">⚔</span> Battle</div><div class="grow"></div>${gear}</header><main class="pad">
     <button class="btn primary block" data-act="newGame">＋ Start a new game</button>
-    ${past.length ? `<h3 class="sec">Past games</h3><div class="stack">${past
-      .map((g) => {
-        const t = g.players.map((p) => playerTotals(p, g.caps).total);
-        const res = t[0] === t[1] ? 'Draw' : `${esc(g.players[t[0] > t[1] ? 0 : 1].name)} won`;
-        return `<button class="card list-card" data-act="viewGame" data-id="${g.id}"><div class="lc-main"><div class="lc-name">${esc(g.players[0].name)} vs ${esc(g.players[1].name)}</div>
-          <div class="lc-sub">${esc(g.mission || 'Battle')} · ${fmtDate(new Date(g.created).toISOString())}</div><div class="lc-sub">${res}</div></div>
-          <div class="lc-pts"><b>${t[0]}–${t[1]}</b></div></button>`;
-      })
-      .join('')}</div>` : `<div class="empty"><div class="empty-ico">🎲</div><p class="muted">Track VP, CP and secondaries round by round.</p></div>`}
+    ${past.length ? `<h3 class="sec">Past games</h3><div class="stack">${past.map((g) => {
+      const t = g.players.map((p) => totals(p, g.caps).total);
+      return `<button class="card list-card" data-act="viewGame" data-id="${g.id}"><div class="lc-main"><div class="lc-name">${esc(g.players[0].name)} vs ${esc(g.players[1].name)}</div><div class="lc-sub">${esc(g.mission || 'Battle')} · ${fmtDate(new Date(g.created).toISOString())}</div><div class="lc-sub">${t[0] === t[1] ? 'Draw' : esc(g.players[t[0] > t[1] ? 0 : 1].name) + ' won'}</div></div><div class="lc-pts"><b>${t[0]}–${t[1]}</b></div></button>`;
+    }).join('')}</div>` : `<div class="empty"><div class="empty-ico">🎲</div><p class="muted">Track VP, CP and secondaries round by round. Stratagems you use from the Stratagems tab deduct CP here.</p></div>`}
   </main>`;
 }
-
-function newGameSheet() {
-  const draft = { p: [{ name: 'Me', listId: '' }, { name: 'Opponent', listId: '' }], mission: '' };
+async function newGameSheet() {
+  const idx = await ensureIndex().catch(() => null);
   showSheet(
-    () => `<div class="sheet-head"><h2>New game</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body">
-      <label class="lbl">Mission</label><input id="ngMission" placeholder="e.g. Take and Hold" value="${esc(draft.mission)}">
-      ${draft.p
-        .map(
-          (p, i) => `<label class="lbl">Player ${i + 1}</label><input id="ngName${i}" value="${esc(p.name)}">
-        <select id="ngList${i}"><option value="">No list / opponent's own</option>${S.lists.map((l) => `<option value="${l.id}" ${p.listId === l.id ? 'selected' : ''}>${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>`
-        )
-        .join('')}
-    </div>
-    <div class="sheet-foot"><button class="btn primary block" data-act="ngStart">Start game</button></div>`,
+    () => `${head('New game')}<div class="sheet-body">
+      <label class="lbl">Mission</label><input id="ngMission" placeholder="e.g. Take and Hold">
+      <label class="lbl">You</label><input id="ngName0" value="Me">
+      <select id="ngList0"><option value="">No list</option>${S.lists.map((l) => `<option value="${l.id}">${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>
+      <label class="lbl">Opponent</label><input id="ngName1" value="Opponent">
+      <select id="ngList1"><option value="">Their list isn't on this phone</option>${S.lists.map((l) => `<option value="${l.id}">${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>
+      ${idx ? `<select id="ngFac1"><option value="">Opponent faction (for stratagems)…</option>${idx.factions.map((x) => `<option value="${x.id}">${esc(x.n)}</option>`).join('')}</select>` : ''}
+    </div><div class="sheet-foot"><button class="btn primary block" data-act="ngStart">Start game</button></div>`,
     { tall: true }
   );
 }
-
 function startGame() {
-  const g = {
-    id: uid(),
-    created: Date.now(),
-    mission: $('#ngMission').value.trim(),
-    round: 1,
-    finished: false,
-    caps: { ...S.settings.caps },
-    players: [0, 1].map((i) => {
-      const listId = $('#ngList' + i).value;
-      const l = S.lists.find((x) => x.id === listId);
-      return { name: $('#ngName' + i).value.trim() || `Player ${i + 1}`, listId, faction: l ? l.factionName : '', cp: 0, battleReady: false, primary: [0, 0, 0, 0, 0], secondary: [0, 0, 0, 0, 0], secNames: '' };
-    }),
-  };
+  const g = { id: uid(), created: Date.now(), mission: $('#ngMission').value.trim(), round: 1, finished: false, caps: { ...S.settings.caps }, log: [], players: [] };
+  for (const i of [0, 1]) {
+    const listId = $('#ngList' + i).value;
+    const l = S.lists.find((x) => x.id === listId);
+    const fac = i === 1 && !l ? $('#ngFac1')?.value || '' : l?.factionId || '';
+    const facName = l ? l.factionName : S.index?.factions.find((x) => x.id === fac)?.n || '';
+    g.players.push({ name: $('#ngName' + i).value.trim() || `Player ${i + 1}`, listId, factionId: fac, faction: facName, cp: 0, battleReady: false, primary: [0, 0, 0, 0, 0], secondary: [0, 0, 0, 0, 0], secNames: '' });
+  }
   S.games.push(g);
   S.activeGameId = g.id;
+  // point the stratagem tab at this game
+  if (g.players[0].listId) S.strat.listId = g.players[0].listId;
+  const oppList = S.lists.find((x) => x.id === g.players[1].listId);
+  if (oppList) {
+    S.strat.oppFaction = oppList.factionId;
+    S.strat.oppDets = [...oppList.detachments];
+  } else if (g.players[1].factionId) {
+    S.strat.oppFaction = g.players[1].factionId;
+    S.strat.oppDets = [];
+  }
   save();
   closeAllSheets();
   render();
 }
-
-function gameMenu() {
-  showSheet(
-    () => `<div class="sheet-head"><h2>Game</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body menu">
-      <button data-act="renameMission">✎ Mission name</button>
-      <button data-act="shareGame">📋 Share result</button>
-      <button data-act="endGame">🏁 Finish game</button>
-      <button class="danger-text" data-act="abandonGame">🗑 Discard game</button>
-    </div>`
-  );
-}
-
 function gameSummary(g) {
-  const t = g.players.map((p) => playerTotals(p, g.caps));
-  return [
-    `${g.mission || 'Battle'} — ${fmtDate(new Date(g.created).toISOString())}`,
-    ...g.players.map((p, i) => `${p.name}${p.faction ? ' (' + p.faction + ')' : ''}: ${t[i].total} VP (Primary ${t[i].pri}, Secondary ${t[i].sec}${p.battleReady ? ', Battle ready ' + t[i].br : ''})`),
-    '',
-    'Round by round (Pri/Sec):',
-    ...[0, 1, 2, 3, 4].map((k) => `R${k + 1}: ${g.players.map((p) => `${p.primary[k] || 0}/${p.secondary[k] || 0}`).join('  vs  ')}`),
-  ].join('\n');
+  const t = g.players.map((p) => totals(p, g.caps));
+  return [`${g.mission || 'Battle'} — ${fmtDate(new Date(g.created).toISOString())}`, ...g.players.map((p, i) => `${p.name}${p.faction ? ' (' + p.faction + ')' : ''}: ${t[i].total} VP (Primary ${t[i].pri}, Secondary ${t[i].sec}${p.battleReady ? ', Battle ready ' + t[i].br : ''})`), '', 'Round by round (Pri/Sec):', ...[0, 1, 2, 3, 4].map((k) => `R${k + 1}: ${g.players.map((p) => `${p.primary[k] || 0}/${p.secondary[k] || 0}`).join('  vs  ')}`)].join('\n');
 }
 
-function viewGameSheet(id) {
-  const g = S.games.find((x) => x.id === id);
-  if (!g) return;
+// ---------------------------------------------------------------- Settings
+function settingsSheet() {
   showSheet(
-    () => `<div class="sheet-head"><h2>${esc(g.players[0].name)} vs ${esc(g.players[1].name)}</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body"><pre class="summary">${esc(gameSummary(g))}</pre>
-    <div class="row gap"><button class="btn ghost grow" data-act="reopenGame" data-id="${g.id}">Reopen</button>
-    <button class="btn ghost grow" data-act="copyGame" data-id="${g.id}">Copy</button>
-    <button class="btn danger grow" data-act="deleteGame" data-id="${g.id}">Delete</button></div></div>`
-  );
-}
-
-// ---------------------------------------------------------------- Data / settings
-function viewData() {
-  const src = S.settings.source;
-  const c = S.settings.caps;
-  const idx = S.factionIndex;
-  return `<header class="top"><div class="brand"><span class="logo">⛁</span> Data & settings</div></header>
-  <main class="pad">
-    <section class="card pad-in">
-      <h3 class="sec flush">Unit data</h3>
-      <p class="muted small">Datasheets and points come from the community BattleScribe data (<b>${esc(src.owner)}/${esc(src.repo)}</b>). Update after a points change to refresh every list.</p>
-      ${idx && idx.date ? `<p class="small">Latest data seen: <b>${fmtDate(idx.date)}</b></p>` : ''}
-      <div class="row gap"><button class="btn primary grow" data-act="updateAll">↻ Update downloaded factions</button></div>
-      <div class="stack tight">${S.downloaded.length
-        ? S.downloaded
-            .map((d) => `<div class="dl-row"><div><div>${esc(d.name)}</div><div class="muted small">${d.units} datasheets · ${d.commitDate ? 'data from ' + fmtDate(d.commitDate) : 'rev ' + esc(d.revision)} · fetched ${fmtDate(d.builtAt)}</div></div>
-            <button class="icon small" data-act="removeFaction" data-file="${esc(d.file)}" aria-label="Remove">✕</button></div>`)
-            .join('')
-        : '<p class="muted small">Nothing downloaded yet. Factions download when you create a list.</p>'}</div>
-      <button class="btn ghost block" data-act="downloadFaction">＋ Download another faction</button>
-      <details class="adv"><summary>Data source (advanced)</summary>
-        <label class="lbl">GitHub owner / repo / branch</label>
-        <div class="row gap"><input id="srcOwner" value="${esc(src.owner)}"><input id="srcRepo" value="${esc(src.repo)}"><input id="srcBranch" class="mini" value="${esc(src.branch)}"></div>
-        <button class="btn ghost block" data-act="saveSource">Save source</button>
-        <p class="muted small">Use this when the community moves to a new edition repo.</p>
-      </details>
-    </section>
-    <section class="card pad-in">
-      <h3 class="sec flush">Scoring</h3>
-      <div class="grid2">
-        <label>Primary cap<input inputmode="numeric" data-bind="cap" data-k="primary" value="${c.primary}"></label>
-        <label>Secondary cap<input inputmode="numeric" data-bind="cap" data-k="secondary" value="${c.secondary}"></label>
-        <label>Battle ready<input inputmode="numeric" data-bind="cap" data-k="battleReady" value="${c.battleReady}"></label>
-        <label>Total cap<input inputmode="numeric" data-bind="cap" data-k="total" value="${c.total}"></label>
-      </div>
-    </section>
-    <section class="card pad-in">
-      <h3 class="sec flush">Backup</h3>
-      <p class="muted small">Lists and games live on this device only. Export a backup now and then, or to move to a new phone.</p>
-      <div class="row gap"><button class="btn ghost grow" data-act="exportBackup">Export backup</button>
-      <label class="btn ghost grow filebtn">Import backup<input type="file" accept=".json,application/json" data-bind="importBackup" hidden></label></div>
-    </section>
-    <p class="muted small center about">Muster is an unofficial fan tool, not affiliated with or endorsed by Games Workshop. Data is maintained by the BSData community; always check your official rules.</p>
-  </main>`;
-}
-
-async function updateAll() {
-  if (!S.downloaded.length) return toast('Nothing downloaded yet');
-  const all = [];
-  try {
-    let ref;
-    try {
-      const c = await latestCommit(S.settings.source);
-      ref = c.sha;
-      S.factionIndex = { ...(S.factionIndex || {}), sha: c.sha, date: c.date, checkedAt: Date.now() };
-      await store.set('kv', 'factionIndex', S.factionIndex);
-    } catch { /* use branch */ }
-    for (const d of S.downloaded.slice()) {
-      showBusy(`Updating ${d.name}…`);
-      const res = await buildFaction(S.settings.source, d.file, { ref, onProgress: (m) => showBusy(`${d.name}: ${m}`) });
-      prepFaction(res.faction);
-      factionCache.set(d.file, res.faction);
-      all.push({ name: d.name, changes: res.changes });
-    }
-  } catch (e) {
-    toast(e.message || 'Update failed');
-  } finally {
-    hideBusy();
-  }
-  await refreshDownloaded();
-  rerender();
-  const total = all.reduce((t, x) => t + x.changes.length, 0);
-  showSheet(
-    () => `<div class="sheet-head"><h2>Data updated</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body">${total ? all
-      .filter((x) => x.changes.length)
-      .map((x) => `<h3 class="sec">${esc(x.name)}</h3><ul class="changes">${x.changes.map((c) => `<li>${esc(c.name)}: ${c.kind === 'new' ? `<span class="tag">new</span> ${esc(c.to)}` : `${esc(c.from)} → <b>${esc(c.to)}</b>`}</li>`).join('')}</ul>`)
-      .join('') : '<p>Everything is up to date — no points changes.</p>'}
-      <p class="muted small">Your lists now use the new points automatically.</p></div>`,
-    { tall: total > 6 }
-  );
-}
-
-async function downloadFactionSheet() {
-  newListDraft = null;
-  let factions = S.factionIndex?.files;
-  if (!factions || !factions.length) {
-    showBusy('Fetching faction list…');
-    try {
-      factions = await listFactions(S.settings.source, S.settings.source.branch);
-      S.factionIndex = { ...(S.factionIndex || {}), files: factions, checkedAt: Date.now() };
-      await store.set('kv', 'factionIndex', S.factionIndex);
-    } finally {
-      hideBusy();
-    }
-  }
-  const have = new Set(S.downloaded.map((d) => d.file));
-  showSheet(
-    () => `<div class="sheet-head"><h2>Download faction</h2><button class="icon" data-act="closeSheet">✕</button></div>
-    <div class="sheet-body">${factions.map((f) => `<button class="frow" data-act="dlFaction" data-file="${esc(f.file)}"><span>${esc(f.name)}</span><span class="muted small">${have.has(f.file) ? 'saved' : esc(f.group)}</span></button>`).join('')}</div>`,
+    () => {
+      const c = S.settings.caps;
+      const idx = S.index;
+      const names = (id) => idx?.factions.find((x) => x.id === id)?.n || id;
+      return `${head('Settings')}<div class="sheet-body">
+      <h3 class="sec flush">Game data</h3>
+      <p class="small">${idx ? `Data built <b>${fmtDate(idx.built)}</b>${idx.wahapediaUpdate ? ` (Wahapedia updated ${esc(idx.wahapediaUpdate)})` : ''}.` : 'No data downloaded yet.'} The site refreshes it every night.</p>
+      <button class="btn primary block" data-act="updateData">↻ Update data on this phone</button>
+      <div class="stack tight">${S.cached.map((id) => `<div class="dl-row"><span>${esc(names(id))}</span><button class="icon small" data-act="removeFaction" data-id="${id}" aria-label="Remove">✕</button></div>`).join('') || '<p class="muted small">No factions saved yet.</p>'}</div>
+      <h3 class="sec">Scoring caps</h3>
+      <div class="grid2"><label>Primary<input inputmode="numeric" data-bind="cap" data-k="primary" value="${c.primary}"></label><label>Secondary<input inputmode="numeric" data-bind="cap" data-k="secondary" value="${c.secondary}"></label>
+      <label>Battle ready<input inputmode="numeric" data-bind="cap" data-k="battleReady" value="${c.battleReady}"></label><label>Total<input inputmode="numeric" data-bind="cap" data-k="total" value="${c.total}"></label></div>
+      <h3 class="sec">Backup</h3><p class="muted small">Lists and games live only on this phone.</p>
+      <div class="row gap"><button class="btn ghost grow" data-act="exportBackup">Export</button><label class="btn ghost grow filebtn">Import<input type="file" accept=".json,application/json" data-bind="importBackup" hidden></label></div>
+      <p class="muted small center about">Data powered by <a href="https://wahapedia.ru" target="_blank" rel="noopener">Wahapedia</a>. Muster is an unofficial fan tool for personal use, not affiliated with Games Workshop. Check important rules against your official sources.</p>
+    </div>`;
+    },
     { tall: true }
   );
 }
 
+async function updateData() {
+  const results = [];
+  try {
+    showBusy('Checking for new data…');
+    S.index = await data.fetchIndex();
+    S.core = await data.downloadCore().catch(() => S.core);
+    for (const id of S.cached) {
+      showBusy(`Updating ${S.index.factions.find((x) => x.id === id)?.n || id}…`);
+      const old = await getFaction(id);
+      const nf = await data.downloadFaction(id, S.index.built);
+      factions.set(id, nf);
+      results.push({ name: nf.n, changes: data.diffPoints(old, nf) });
+    }
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    hideBusy();
+  }
+  closeAllSheets();
+  rerender();
+  const n = results.reduce((t, r) => t + r.changes.length, 0);
+  showSheet(() => `${head('Data updated')}<div class="sheet-body">${n ? results.filter((r) => r.changes.length).map((r) => `<h3 class="sec">${esc(r.name)}</h3><ul class="changes">${r.changes.map((c) => `<li>${esc(c.name)}: ${c.kind === 'new' ? `<span class="tag">new</span> ${esc(c.to)}` : `${esc(c.from)} → <b>${esc(c.to)}</b>`}</li>`).join('')}</ul>`).join('') : '<p>No points changes since your last update.</p>'}<p class="muted small">Your lists use the new values automatically.</p></div>`, { tall: n > 8 });
+}
+
 async function exportBackup() {
-  const data = { app: 'muster', v: 1, exported: new Date().toISOString(), lists: S.lists, games: S.games, settings: S.settings };
-  const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ app: 'muster', v: 2, exported: new Date().toISOString(), lists: S.lists, games: S.games, settings: S.settings }, null, 1)], { type: 'application/json' });
   const name = `muster-backup-${new Date().toISOString().slice(0, 10)}.json`;
   try {
     const file = new File([blob], name, { type: 'application/json' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Muster backup' });
-      return;
-    }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) return await navigator.share({ files: [file], title: 'Muster backup' });
   } catch (e) {
     if (e && e.name === 'AbortError') return;
   }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
+  setTimeout(() => a.remove(), 1000);
 }
-
 async function importBackup(file) {
   try {
     const d = JSON.parse(await file.text());
     if (d.app !== 'muster') throw new Error();
-    const ok = await confirmBox(`Import ${plural(d.lists?.length || 0, 'list')} and ${plural(d.games?.length || 0, 'game')}? Items with the same ID are replaced; others are kept.`, 'Import');
-    if (!ok) return;
+    if (!(await confirmBox(`Import ${plural(d.lists?.length || 0, 'list')} and ${plural(d.games?.length || 0, 'game')}?`, 'Import'))) return;
     const merge = (cur, inc) => {
       const m = new Map(cur.map((x) => [x.id, x]));
-      for (const x of inc || []) m.set(x.id, x);
+      for (const x of inc || []) if (x.factionId || !x.factionFile) m.set(x.id, x);
       return [...m.values()];
     };
     S.lists = merge(S.lists, d.lists);
@@ -1018,13 +1075,19 @@ async function importBackup(file) {
   }
 }
 
-// ---------------------------------------------------------------- actions
+// ================================================================= actions
+const entryOf = (el) => curList().units.find((x) => x.uid === el.dataset.uid);
 const A = {
   closeSheet: () => closeSheet(),
-  scrim: () => closeSheet(),
-  confirmYes: () => confirmResolve && confirmResolve(true),
-  confirmNo: () => confirmResolve && confirmResolve(false),
-  promptOk: () => promptResolve && promptResolve($('#promptInput').value),
+  confirmYes: () => confirmResolve?.(true),
+  confirmNo: () => confirmResolve?.(false),
+  promptOk: () => promptResolve?.($('#promptInput').value),
+  tab: (el) => {
+    S.tab = el.dataset.tab;
+    closeAllSheets();
+    render();
+  },
+  settings: () => settingsSheet(),
   install: async () => {
     if (!deferredInstall) return;
     deferredInstall.prompt();
@@ -1034,17 +1097,17 @@ const A = {
   },
   // lists
   newList: () => newListFlow().catch((e) => toast(e.message)),
-  nlLimit: (el) => {
-    keepNewListName();
-    newListDraft.limit = +el.dataset.v;
+  nlSize: (el) => {
+    keepDraftName();
+    newDraft.size = el.dataset.v;
     rerenderTopSheet();
   },
   nlFaction: (el) => {
-    keepNewListName();
-    newListDraft.file = el.dataset.file;
+    keepDraftName();
+    newDraft.faction = el.dataset.id;
     rerenderTopSheet();
   },
-  nlCreate: () => createListFromDraft(),
+  nlCreate: () => createList(),
   openList: (el) => {
     S.openListId = el.dataset.id;
     render();
@@ -1054,44 +1117,40 @@ const A = {
     render();
   },
   downloadForList: async () => {
-    const l = curList();
     try {
-      await ensureFaction(l.factionFile);
+      await ensureFaction(curList().factionId);
     } catch (e) {
       toast(e.message);
     }
     rerender();
   },
   importList: async () => {
-    const code = await promptBox('Import list code', '', { placeholder: 'Paste a MUSTER1:… code', multiline: true, okLabel: 'Import' });
+    const code = await promptBox('Import list code', '', { placeholder: 'Paste a MUSTER2:… code', multiline: true, ok: 'Import' });
     if (!code) return;
     let d;
     try {
       d = decodeList(code);
     } catch {
-      return toast("That doesn't look like a Muster code");
+      return toast("That isn't a Muster list code");
     }
+    let f;
     try {
-      await ensureFaction(d.f);
+      f = await ensureFaction(d.f);
     } catch (e) {
       return toast(e.message);
     }
-    const f = await getFaction(d.f);
-    const list = {
-      id: uid(),
-      name: d.n || 'Imported list',
-      factionFile: d.f,
-      factionName: f.name,
-      limit: d.l || 2000,
-      detachmentId: d.d || '',
-      units: d.u.map(([unitId, models, enh, wl, notes, name, po]) => ({ uid: uid(), unitId, models, enhancementId: enh, warlord: !!wl, notes, ptsOverride: po ?? null, name: f.unitById.get(unitId)?.name || name || 'Unknown unit', lastPts: 0 })),
-      created: Date.now(),
-      updated: Date.now(),
-    };
-    S.lists.push(list);
+    const map = new Map();
+    const units = d.u.map(([unitId, cost, enh, wl, notes, name, po, oldUid, attachTo]) => {
+      const nu = uid();
+      map.set(oldUid, nu);
+      return { uid: nu, unitId, cost, enh, warlord: !!wl, notes, ptsOverride: po ?? null, attachTo, name: f.unitById.get(unitId)?.n || name, lastPts: 0 };
+    });
+    units.forEach((e) => (e.attachTo = map.get(e.attachTo) || ''));
+    const l = { id: uid(), name: d.n || 'Imported list', factionId: d.f, factionName: f.n, size: d.s || 'strike', limits: d.L || { ...SIZES.strike }, detachments: d.d || [], disposition: d.fd || '', units, created: Date.now(), updated: Date.now() };
+    S.lists.push(l);
     await save('lists');
-    S.tab = 'lists';
-    S.openListId = list.id;
+    S.tab = 'army';
+    S.openListId = l.id;
     render();
     toast('List imported');
   },
@@ -1106,78 +1165,91 @@ const A = {
       rerender();
     }
   },
-  setLimit: async () => {
-    const l = curList();
+  editLimits: () => {
     closeAllSheets();
-    const v = await promptBox('Points limit', String(l.limit));
-    const n = parseInt(v, 10);
-    if (n > 0) {
-      l.limit = n;
-      touch(l);
-      rerender();
+    editLimitsSheet();
+  },
+  setSize: (el) => {
+    const l = curList();
+    l.size = el.dataset.v;
+    if (l.size !== 'custom') {
+      l.limits = { ...SIZES[l.size] };
+      delete l.limits.label;
     }
+    touch(l);
+    rerenderTopSheet();
   },
   dupList: () => {
     const l = curList();
-    const copy = JSON.parse(JSON.stringify(l));
-    copy.id = uid();
-    copy.name = l.name + ' (copy)';
-    copy.created = copy.updated = Date.now();
-    copy.units.forEach((e) => (e.uid = uid()));
-    S.lists.push(copy);
+    const c = JSON.parse(JSON.stringify(l));
+    const map = new Map();
+    c.id = uid();
+    c.name = l.name + ' (copy)';
+    c.created = c.updated = Date.now();
+    c.units.forEach((e) => {
+      const n = uid();
+      map.set(e.uid, n);
+      e.uid = n;
+    });
+    c.units.forEach((e) => (e.attachTo = map.get(e.attachTo) || ''));
+    S.lists.push(c);
     save('lists');
     closeAllSheets();
-    S.openListId = copy.id;
+    S.openListId = c.id;
     render();
-    toast('List duplicated');
   },
   deleteList: async () => {
     const l = curList();
     closeAllSheets();
-    if (await confirmBox(`Delete “${l.name}”? This can't be undone.`, 'Delete', true)) {
-      S.lists = S.lists.filter((x) => x.id !== l.id);
-      await save('lists');
-      S.openListId = null;
-      render();
-    }
-  },
-  refreshListData: async () => {
-    const l = curList();
-    closeAllSheets();
-    try {
-      const { changes } = await ensureFaction(l.factionFile, { force: true });
-      toast(changes.length ? `${plural(changes.length, 'points change')} applied` : 'Data refreshed — no points changes');
-    } catch (e) {
-      toast(e.message);
-    }
-    rerender();
+    if (!(await confirmBox(`Delete “${l.name}”?`, 'Delete', true))) return;
+    S.lists = S.lists.filter((x) => x.id !== l.id);
+    await save('lists');
+    S.openListId = null;
+    render();
   },
   shareText: () => {
     const l = curList();
-    shareText(l.name, listAsText(l, factionCache.get(l.factionFile)));
+    shareText(l.name, listAsText(l, factions.get(l.factionId)));
   },
   shareCode: () => {
     const l = curList();
     shareText(l.name, encodeList(l));
   },
+  stratsForList: () => {
+    S.strat.side = 'mine';
+    S.strat.listId = curList().id;
+    S.tab = 'strats';
+    closeAllSheets();
+    render();
+  },
   toggleIssues: () => {
     S.showIssues = !S.showIssues;
     rerender();
   },
-  pickDetachment: () => pickDetachment(),
-  detExpand: (el) => detExpandHandler && detExpandHandler(el.dataset.id),
-  detChoose: (el) => {
+  pickDetachments: () => pickDetachments(),
+  detOpen: (el) => detOpenHandler?.(el.dataset.id),
+  detToggle: (el) => {
     const l = curList();
-    l.detachmentId = el.dataset.id;
+    const id = el.dataset.id;
+    l.detachments = l.detachments.includes(id) ? l.detachments.filter((x) => x !== id) : [...l.detachments, id];
+    const f = factions.get(l.factionId);
+    const disp = dispositionsOf(l, f);
+    if (l.disposition && !disp.includes(l.disposition)) l.disposition = '';
+    if (!l.disposition && disp.length === 1) l.disposition = disp[0];
+    touch(l);
+    rerenderTopSheet();
+  },
+  pickDisposition: () => pickDisposition(),
+  setDisposition: (el) => {
+    const l = curList();
+    l.disposition = el.dataset.v;
     touch(l);
     closeSheet();
     rerender();
   },
-  armyRules: async () => {
-    const l = curList();
-    const f = await getFaction(l.factionFile);
-    showSheet(() => `<div class="sheet-head"><h2>Army rules</h2><button class="icon" data-act="closeSheet">✕</button></div>
-      <div class="sheet-body">${f.armyRules.map((r) => `<div class="rule"><b>${esc(r.name)}</b><div>${fmtRule(r.text)}</div></div>`).join('')}</div>`, { tall: true });
+  armyRules: () => {
+    const f = factions.get(curList().factionId);
+    showSheet(() => `${head('Army rule')}<div class="sheet-body">${f.armyRules.map((r) => `<div class="rule"><b>${esc(r.n)}</b><div>${rich(r.d)}</div></div>`).join('')}</div>`, { tall: true });
   },
   addUnit: () => addUnitSheet(),
   pickRole: (el) => {
@@ -1190,23 +1262,16 @@ const A = {
     rerenderTopSheet();
   },
   pickAdd: (el) => {
-    addUnitToList(el.dataset.id);
+    addUnit(el.dataset.id);
     if (el.dataset.close) closeSheet();
-    // refresh counts in picker if it is open beneath
-    const r = $('#pickResults');
-    if (r) {
-      const l = curList();
-      r.innerHTML = pickerResults(factionCache.get(l.factionFile), l);
-    }
   },
-  viewUnit: (el) => viewUnitSheet(el.dataset.id, !!el.dataset.add),
-  editEntry: (el) => editEntrySheet(el.dataset.uid),
-  setSize: (el) => {
-    const l = curList();
-    const e = l.units.find((x) => x.uid === el.dataset.uid);
-    e.models = +el.dataset.v;
-    e.lastPts = entryPts(e, factionCache.get(l.factionFile));
-    touch(l);
+  viewUnit: (el) => viewUnit(el.dataset.id, !!el.dataset.add),
+  editEntry: (el) => editEntry(el.dataset.uid),
+  setCost: (el) => {
+    const e = entryOf(el);
+    e.cost = +el.dataset.v;
+    e.lastPts = entryPts(e, factions.get(curList().factionId));
+    touch(curList());
     rerenderTopSheet();
   },
   setWarlord: (el) => {
@@ -1216,27 +1281,89 @@ const A = {
     rerenderTopSheet();
   },
   setEnh: (el) => {
-    const l = curList();
-    const e = l.units.find((x) => x.uid === el.dataset.uid);
-    e.enhancementId = el.dataset.v;
-    e.lastPts = entryPts(e, factionCache.get(l.factionFile));
-    touch(l);
+    const e = entryOf(el);
+    e.enh = el.dataset.v;
+    e.lastPts = entryPts(e, factions.get(curList().factionId));
+    touch(curList());
     rerenderTopSheet();
   },
-  toggleAllEnh: () => toggleAllEnhHandler && toggleAllEnhHandler(),
+  setAttach: (el) => {
+    const e = entryOf(el);
+    e.attachTo = el.dataset.v;
+    touch(curList());
+    rerenderTopSheet();
+  },
+  toggleAllEnh: () => allEnhHandler?.(),
   dupEntry: (el) => {
     const l = curList();
-    const e = l.units.find((x) => x.uid === el.dataset.uid);
-    l.units.splice(l.units.indexOf(e) + 1, 0, { ...e, uid: uid(), warlord: false, enhancementId: '' });
+    const e = entryOf(el);
+    l.units.splice(l.units.indexOf(e) + 1, 0, { ...e, uid: uid(), warlord: false, enh: '', attachTo: '' });
     touch(l);
     closeSheet();
-    toast(`Duplicated ${e.name}`);
   },
   removeEntry: (el) => {
     const l = curList();
-    l.units = l.units.filter((x) => x.uid !== el.dataset.uid);
+    const id = el.dataset.uid;
+    l.units = l.units.filter((x) => x.uid !== id);
+    l.units.forEach((x) => x.attachTo === id && (x.attachTo = ''));
     touch(l);
     closeSheet();
+  },
+  // stratagems
+  stSide: (el) => {
+    S.strat.side = el.dataset.v;
+    save('settings');
+    render();
+  },
+  stPhase: (el) => {
+    S.strat.phase = el.dataset.v;
+    rerender();
+  },
+  stTurn: (el) => {
+    S.strat.turn = el.dataset.v;
+    rerender();
+  },
+  stCore: () => {
+    S.strat.core = !S.strat.core;
+    save('settings');
+    rerender();
+  },
+  stAll: () => {
+    S.strat.allDets = !S.strat.allDets;
+    rerender();
+  },
+  stToggle: (el) => {
+    S.strat.open[el.dataset.id] = !S.strat.open[el.dataset.id];
+    keepScroll = true;
+    hydrateStrats();
+  },
+  stOppPick: () => oppPickSheet(),
+  oppDet: (el) => {
+    const st = S.strat;
+    const id = el.dataset.id;
+    st.oppDets = st.oppDets.includes(id) ? st.oppDets.filter((x) => x !== id) : [...st.oppDets, id];
+    save('settings');
+    rerenderTopSheet();
+  },
+  stDownload: async (el) => {
+    try {
+      await ensureFaction(el.dataset.id);
+    } catch (e) {
+      toast(e.message);
+    }
+    rerender();
+  },
+  stUse: (el) => {
+    const g = activeGame();
+    if (!g) return;
+    const p = S.strat.side === 'opp' ? 1 : 0;
+    const cp = parseInt(el.dataset.cp, 10) || 0;
+    if (g.players[p].cp < cp) return toast(`${g.players[p].name} only has ${g.players[p].cp} CP`);
+    g.players[p].cp -= cp;
+    (g.log ||= []).push({ r: g.round, p, n: el.dataset.n, cp });
+    save('games');
+    toast(`${el.dataset.n}: −${cp} CP (${g.players[p].cp} left)`);
+    rerender();
   },
   // battle
   newGame: () => newGameSheet(),
@@ -1269,7 +1396,6 @@ const A = {
     activeGame().players.forEach((p) => (p.cp += 1));
     save('games');
     rerender();
-    toast('+1 CP to both players');
   },
   toggleBR: (el) => {
     activeGame().players[+el.dataset.i].battleReady = el.checked;
@@ -1277,8 +1403,7 @@ const A = {
     rerender();
   },
   renamePlayer: async (el) => {
-    const g = activeGame();
-    const p = g.players[+el.dataset.i];
+    const p = activeGame().players[+el.dataset.i];
     const v = await promptBox('Player name', p.name);
     if (v && v.trim()) {
       p.name = v.trim();
@@ -1287,14 +1412,30 @@ const A = {
     }
   },
   openPlayerList: (el) => {
-    const g = activeGame();
-    const id = g.players[+el.dataset.i].listId;
-    if (!S.lists.find((l) => l.id === id)) return toast('That list was deleted');
-    S.tab = 'lists';
+    const id = activeGame().players[+el.dataset.i].listId;
+    if (!S.lists.some((l) => l.id === id)) return toast('That list was deleted');
+    S.tab = 'army';
     S.openListId = id;
     render();
   },
-  gameMenu: () => gameMenu(),
+  playerStrats: (el) => {
+    const i = +el.dataset.i;
+    const p = activeGame().players[i];
+    if (i === 0) {
+      S.strat.side = 'mine';
+      if (p.listId) S.strat.listId = p.listId;
+    } else {
+      S.strat.side = 'opp';
+      const l = S.lists.find((x) => x.id === p.listId);
+      if (l) {
+        S.strat.oppFaction = l.factionId;
+        S.strat.oppDets = [...l.detachments];
+      } else if (p.factionId) S.strat.oppFaction = p.factionId;
+    }
+    S.tab = 'strats';
+    render();
+  },
+  gameMenu: () => showSheet(() => `${head('Game')}<div class="sheet-body menu"><button data-act="renameMission">✎ Mission name</button><button data-act="shareGame">📋 Share result</button><button data-act="endGame">🏁 Finish game</button><button class="danger-text" data-act="abandonGame">🗑 Discard game</button></div>`),
   renameMission: async () => {
     const g = activeGame();
     closeAllSheets();
@@ -1314,20 +1455,24 @@ const A = {
     S.activeGameId = null;
     await save();
     render();
-    viewGameSheet(g.id);
+    A.viewGame({ dataset: { id: g.id } });
   },
   abandonGame: async () => {
     closeAllSheets();
-    if (!(await confirmBox('Discard this game? Scores will be lost.', 'Discard', true))) return;
+    if (!(await confirmBox('Discard this game?', 'Discard', true))) return;
     S.games = S.games.filter((x) => x.id !== S.activeGameId);
     S.activeGameId = null;
     await save();
     render();
   },
-  viewGame: (el) => viewGameSheet(el.dataset.id),
-  reopenGame: (el) => {
+  viewGame: (el) => {
     const g = S.games.find((x) => x.id === el.dataset.id);
+    if (!g) return;
+    showSheet(() => `${head(`${g.players[0].name} vs ${g.players[1].name}`)}<div class="sheet-body"><pre class="summary">${esc(gameSummary(g))}</pre><div class="row gap"><button class="btn ghost grow" data-act="reopenGame" data-id="${g.id}">Reopen</button><button class="btn ghost grow" data-act="copyGame" data-id="${g.id}">Copy</button><button class="btn danger grow" data-act="deleteGame" data-id="${g.id}">Delete</button></div></div>`);
+  },
+  reopenGame: (el) => {
     if (activeGame()) return toast('Finish your current game first');
+    const g = S.games.find((x) => x.id === el.dataset.id);
     g.finished = false;
     S.activeGameId = g.id;
     save();
@@ -1343,73 +1488,34 @@ const A = {
     await save('games');
     render();
   },
-  // data
-  updateAll: () => updateAll(),
-  downloadFaction: () => downloadFactionSheet().catch((e) => toast(e.message)),
-  dlFaction: async (el) => {
-    closeAllSheets();
-    try {
-      const { changes } = await ensureFaction(el.dataset.file, { force: true });
-      toast(changes.length ? `${plural(changes.length, 'points change')}` : 'Downloaded');
-    } catch (e) {
-      toast(e.message);
-    }
-    rerender();
-  },
+  // settings
+  updateData: () => updateData(),
   removeFaction: async (el) => {
-    const file = el.dataset.file;
-    const used = S.lists.filter((l) => l.factionFile === file).length;
-    if (!(await confirmBox(`Remove ${factionLabel(file)} data from this device?${used ? ` ${plural(used, 'list')} use it and will need it re-downloaded.` : ''}`, 'Remove', true))) return;
-    await store.del('factions', file);
-    factionCache.delete(file);
-    await refreshDownloaded();
-    rerender();
-  },
-  saveSource: async () => {
-    const s = { owner: $('#srcOwner').value.trim(), repo: $('#srcRepo').value.trim(), branch: $('#srcBranch').value.trim() || 'main' };
-    if (!s.owner || !s.repo) return toast('Owner and repo are needed');
-    S.settings.source = s;
-    S.factionIndex = null;
-    await store.del('kv', 'factionIndex');
-    await clearRawCache();
-    await save('settings');
-    toast('Source saved');
-    rerender();
+    const id = el.dataset.id;
+    const used = S.lists.filter((l) => l.factionId === id).length;
+    if (!(await confirmBox(`Remove this faction's data from the phone?${used ? ` ${plural(used, 'list')} will need it re-downloaded.` : ''}`, 'Remove', true))) return;
+    await data.removeFaction(id);
+    factions.delete(id);
+    S.cached = await data.cachedFactionIds();
+    rerenderTopSheet();
   },
   exportBackup: () => exportBackup(),
-  tab: (el) => {
-    S.tab = el.dataset.tab;
-    closeAllSheets();
-    render();
-  },
 };
-
-function keepNewListName() {
-  const n = $('#nlName');
-  if (n && newListDraft) newListDraft.name = n.value;
-  const c = $('#nlLimitCustom');
-  if (c && c.value.trim() && newListDraft) newListDraft.limit = parseInt(c.value, 10) || newListDraft.limit;
-}
 
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !el.dataset.act) return;
-  if (el.tagName === 'INPUT' && el.type === 'checkbox') return; // handled on change
+  if (el.tagName === 'INPUT' && el.type === 'checkbox') return;
   const fn = A[el.dataset.act];
   if (fn) {
     e.preventDefault();
     fn(el, e);
   }
 });
-
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   const el = e.target;
-  if (el.matches('input[type=checkbox][data-act]')) {
-    const fn = A[el.dataset.act];
-    if (fn) fn(el, e);
-    return;
-  }
-  const b = el.dataset && el.dataset.bind;
+  if (el.matches('input[type=checkbox][data-act]')) return A[el.dataset.act]?.(el, e);
+  const b = el.dataset?.bind;
   if (b === 'importBackup' && el.files[0]) importBackup(el.files[0]);
   if (b === 'stepVal') {
     const g = activeGame();
@@ -1421,78 +1527,102 @@ document.addEventListener('change', (e) => {
     save('games');
     rerender();
   }
-  if (b === 'ptsOverride') {
-    const l = curList();
-    const en = l.units.find((x) => x.uid === el.dataset.uid);
-    en.ptsOverride = el.value.trim() === '' ? null : Math.max(0, parseInt(el.value, 10) || 0);
-    touch(l);
-    rerenderTopSheet();
-  }
   if (b === 'cap') {
     S.settings.caps[el.dataset.k] = Math.max(0, parseInt(el.value, 10) || 0);
     save('settings');
   }
+  if (b === 'limit') {
+    const l = curList();
+    l.limits = { ...limitsOf(l), [el.dataset.k]: Math.max(0, parseInt(el.value, 10) || 0) };
+    l.size = 'custom';
+    touch(l);
+    rerenderTopSheet();
+  }
+  if (b === 'ptsOverride') {
+    const ent = entryOf(el);
+    ent.ptsOverride = el.value.trim() === '' ? null : Math.max(0, parseInt(el.value, 10) || 0);
+    touch(curList());
+    rerenderTopSheet();
+  }
+  if (b === 'stList') {
+    S.strat.listId = el.value;
+    save('settings');
+    rerender();
+  }
+  if (b === 'oppFaction') {
+    S.strat.oppFaction = el.value;
+    S.strat.oppDets = [];
+    save('settings');
+    rerenderTopSheet();
+    if (el.value) {
+      try {
+        await ensureFaction(el.value);
+      } catch (err) {
+        toast(err.message);
+      }
+      rerenderTopSheet();
+    }
+  }
 });
-
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.id === 'pickQ') {
     picker.q = el.value;
     const l = curList();
-    $('#pickResults').innerHTML = pickerResults(factionCache.get(l.factionFile), l);
+    $('#pickResults').innerHTML = pickerResults(factions.get(l.factionId), l);
     return;
   }
-  const b = el.dataset && el.dataset.bind;
+  if (el.id === 'stQ') {
+    S.strat.q = el.value;
+    hydrateStrats();
+    return;
+  }
+  const b = el.dataset?.bind;
   if (b === 'entryNotes') {
-    const l = curList();
-    const en = l.units.find((x) => x.uid === el.dataset.uid);
-    en.notes = el.value;
-    touch(l);
+    entryOf(el).notes = el.value;
+    touch(curList());
   }
   if (b === 'secNote') {
     activeGame().players[+el.dataset.i].secNames = el.value;
     save('games');
   }
 });
-
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'promptInput' && e.target.tagName === 'INPUT') A.promptOk();
   if (e.key === 'Escape' && sheets.length) closeSheet();
 });
-
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstall = e;
-  if (S.tab === 'lists' && !S.openListId) rerender();
+  if (S.tab === 'army' && !S.openListId) rerender();
 });
 
-// ---------------------------------------------------------------- boot
+// ================================================================= boot
 async function boot() {
-  const [lists, games, settings, idx] = await Promise.all([store.get('kv', 'lists'), store.get('kv', 'games'), store.get('kv', 'settings'), store.get('kv', 'factionIndex')]);
-  S.lists = lists || [];
+  const [lists, games, settings, idx, core] = await Promise.all([store.get('kv', 'lists'), store.get('kv', 'games'), store.get('kv', 'settings'), data.cachedIndex(), data.cachedCore()]);
+  // lists from the old 10th edition version can't be read by this one
+  S.lists = (lists || []).filter((l) => l.factionId);
   S.games = games || [];
   if (settings) {
     S.activeGameId = settings.activeGameId || null;
-    delete settings.activeGameId;
-    S.settings = { ...S.settings, ...settings, caps: { ...S.settings.caps, ...(settings.caps || {}) }, source: { ...DEFAULT_SOURCE, ...(settings.source || {}) } };
+    S.settings = { ...S.settings, hideLegends: settings.hideLegends ?? true, caps: { ...S.settings.caps, ...(settings.caps || {}) } };
+    if (settings.strat) S.strat = { ...S.strat, ...settings.strat, open: {}, q: '' };
   }
-  S.factionIndex = idx || null;
-  await refreshDownloaded();
-  // preload factions used by lists so the home screen can show points
-  for (const l of S.lists) await getFaction(l.factionFile);
+  S.index = idx || null;
+  S.core = core || null;
+  S.cached = await data.cachedFactionIds();
+  for (const l of S.lists) await getFaction(l.factionId);
+  if (S.strat.oppFaction) await getFaction(S.strat.oppFaction);
   if (activeGame()) S.tab = 'battle';
   render();
   store.requestPersistence();
+  // refresh the faction index quietly in the background
+  data.fetchIndex().then((i) => (S.index = i)).catch(() => {});
 }
-
 boot().catch((e) => {
   console.error(e);
-  $('#view').innerHTML = `<div class="pad"><p>Something went wrong starting Muster: ${esc(e.message)}</p></div>`;
+  $('#view').innerHTML = `<div class="pad"><p>Muster couldn't start: ${esc(e.message)}</p></div>`;
 });
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
-}
-
-// exposed for tests
-window.__muster = { S, factionCache, validate, listPts, encodeList, decodeList };
+window.__muster = { S, factions, validate, listPts, listDp, encodeList, decodeList };

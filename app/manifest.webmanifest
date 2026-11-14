@@ -1,7 +1,7 @@
 {
   "name": "Muster — Army Lists & Battle Tracker",
   "short_name": "Muster",
-  "description": "Build army lists from community BattleScribe data and track your games.",
+  "description": "Army builder, battle tracker and stratagem reference.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
