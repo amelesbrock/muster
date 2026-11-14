@@ -40,6 +40,13 @@ def num(s):
         return 0
 
 
+HEADERS = collections.Counter()
+
+
+def plain_text(h):
+    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', h or '')).strip()
+
+
 def plus(v):
     v = (v or '').strip()
     return v + '+' if re.fullmatch(r'\d', v) else v
@@ -83,12 +90,24 @@ def unit(ds):
         'n': m['name'], 'M': m['M'], 'T': m['T'], 'Sv': m['Sv'], 'inv': plus(m['inv_sv']) if m['inv_sv'] not in ('', '-') else '',
         'invd': m['inv_sv_descr'], 'W': m['W'], 'Ld': m['Ld'], 'OC': m['OC'], 'base': m['base_size'],
     } for m in sorted(g['Datasheets_models'], key=lambda r: num(r['line']))]
-    costs = []
+    # Costs come in blocks: a header row (no cost) then size rows. 11th edition adds
+    # stepped blocks (e.g. a higher cost for the 2nd/3rd unit of the same datasheet).
+    blocks = []
     for c in sorted(g['Datasheets_models_cost'], key=lambda r: num(r['line'])):
         if not c['cost'].strip():
+            blocks.append({'label': plain_text(c['description']), 'rows': []})
+            HEADERS[plain_text(c['description'])] += 1
             continue
+        if not blocks:
+            blocks.append({'label': '', 'rows': []})
         m = re.search(r'(\d+)\s+models?', c['description'])
-        costs.append({'d': c['description'], 'pts': num(c['cost']), 'models': int(m.group(1)) if m else None})
+        blocks[-1]['rows'].append({'d': c['description'], 'pts': num(c['cost']), 'models': int(m.group(1)) if m else None})
+    blocks = [b for b in blocks if b['rows']]
+    costs = blocks[0]['rows'] if blocks else []
+    steps = []
+    for b in blocks[1:]:
+        o = re.search(r'(\d+)\s*(?:st|nd|rd|th)', b['label'], re.I)
+        steps.append({'label': b['label'], 'from': int(o.group(1)) if o else 2, 'rows': b['rows']})
     weapons, seen = [], set()
     for w in sorted(g['Datasheets_wargear'], key=lambda r: (num(r['line']), num(r['line_in_wargear']))):
         key = (w['name'], w['range'], w['A'], w['BS_WS'], w['S'], w['AP'], w['D'], w['description'])
@@ -119,7 +138,7 @@ def unit(ds):
         'sup': ds['is_support'] == 'true', 'lh': ds['leader_head'], 'lf': ds['leader_footer'],
         'load': ds['loadout'], 'tr': ds['transport'],
         'dmg': {'w': ds['damaged_w'], 'd': ds['damaged_description']} if ds['damaged_w'] else None,
-        'link': ds['link'], 'm': models, 'c': costs, 'w': weapons, 'ab': ab, 'refs': refs,
+        'link': ds['link'], 'm': models, 'c': costs, 'cs': steps, 'w': weapons, 'ab': ab, 'refs': refs,
         'kw': kw, 'mkw': mkw, 'fkw': fkw,
         'character': 'character' in kwl, 'epic': 'epic hero' in kwl, 'battleline': 'battleline' in kwl,
         'dt': 'dedicated transport' in kwl or ds['role'] == 'Dedicated Transports',
@@ -190,6 +209,7 @@ with open(f'{D}/index.json', 'w', encoding='utf-8') as fh:
         'source': manifest.get('source', ''),
         'factions': sorted(index, key=lambda f: f['n']),
     }, fh, ensure_ascii=False, indent=1)
+print('Cost headers:', HEADERS.most_common(15))
 print('Sources:', sorted({(s['name'], s['type'], s['edition']) for s in sources.values()}))
 # publish only compiled JSON
 for f in os.listdir(D):

@@ -29,10 +29,6 @@ jobs:
         run: bash scripts/fetch-data.sh
       - name: Compile data for the app
         run: python3 scripts/compile.py
-      - name: Dev sample (temporary)
-        run: |
-          tar czf /tmp/s.tgz -C site/data index.json core.json f/LoV.json f/GC.json f/TS.json
-          echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/s.tgz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)
