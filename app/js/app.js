@@ -180,20 +180,39 @@ const roleRank = (r) => {
 
 const limitsOf = (l) => l.limits || SIZES.strike;
 
-function costOpt(u, e) {
-  if (!u || !u.c.length) return { pts: 0, d: '' };
-  return u.c[Math.min(e.cost || 0, u.c.length - 1)];
+// Which copy of this datasheet is the entry (1st, 2nd, 3rd…) — stepped costs depend on it
+function copyNo(e, l) {
+  if (!l) return 1;
+  let n = 0;
+  for (const x of l.units) {
+    if (x.unitId === e.unitId) n++;
+    if (x.uid === e.uid) return n;
+  }
+  return 1;
 }
-function entryPts(e, f) {
+function costOpt(u, e, l) {
+  if (!u || !u.c.length) return { pts: 0, d: '' };
+  const base = u.c[Math.min(e.cost || 0, u.c.length - 1)];
+  const n = copyNo(e, l);
+  const step = (u.cs || []).filter((s) => s.from <= n).sort((a, b) => b.from - a.from)[0];
+  if (!step) return base;
+  const row = step.rows.find((r) => r.models != null && r.models === base.models) || step.rows[Math.min(e.cost || 0, step.rows.length - 1)];
+  return row ? { ...row, step: step.label } : base;
+}
+function entryPts(e, f, l) {
   if (e.ptsOverride != null && e.ptsOverride !== '') return +e.ptsOverride || 0;
   const u = f && f.unitById.get(e.unitId);
   if (!u) return e.lastPts || 0;
-  let p = costOpt(u, e).pts;
+  let p = costOpt(u, e, l).pts;
+  for (const k of e.ex || []) {
+    const [b, r] = k.split(':').map(Number);
+    p += u.cx?.[b]?.rows?.[r]?.pts || 0;
+  }
   const en = e.enh && f.enhById.get(e.enh);
   if (en) p += en.pts;
   return p;
 }
-const listPts = (l, f) => l.units.reduce((t, e) => t + entryPts(e, f), 0);
+const listPts = (l, f) => l.units.reduce((t, e) => t + entryPts(e, f, l), 0);
 const listDp = (l, f) => (l.detachments || []).reduce((t, id) => t + (f.detById.get(id)?.dp || 0), 0);
 
 function validate(l, f) {
@@ -294,11 +313,11 @@ function listAsText(l, f) {
       const u = f.unitById.get(e.unitId);
       const en = e.enh && f.enhById.get(e.enh);
       const bits = [];
-      if (u && u.c.length > 1) bits.push(costOpt(u, e).d);
+      if (u && u.c.length > 1) bits.push(costOpt(u, e, l).d);
       if (e.warlord) bits.push('Warlord');
       if (en) bits.push(`${en.n} +${en.pts}`);
       const host = e.attachTo && l.units.find((x) => x.uid === e.attachTo);
-      lines.push(`${host ? '   ↳ ' : '• '}${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f)} pts${host ? ` (with ${host.name})` : ''}`);
+      lines.push(`${host ? '   ↳ ' : '• '}${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f, l)} pts${host ? ` (with ${host.name})` : ''}`);
       if (e.notes) lines.push(`     ${e.notes.replace(/\n/g, '; ')}`);
     }
     lines.push('');
@@ -308,7 +327,7 @@ function listAsText(l, f) {
 }
 
 function encodeList(l) {
-  const d = { v: 2, n: l.name, f: l.factionId, s: l.size, L: l.limits, d: l.detachments, fd: l.disposition || '', u: l.units.map((e) => [e.unitId, e.cost || 0, e.enh || '', e.warlord ? 1 : 0, e.notes || '', e.name, e.ptsOverride ?? null, e.uid, e.attachTo || '']) };
+  const d = { v: 2, n: l.name, f: l.factionId, s: l.size, L: l.limits, d: l.detachments, fd: l.disposition || '', u: l.units.map((e) => [e.unitId, e.cost || 0, e.enh || '', e.warlord ? 1 : 0, e.notes || '', e.name, e.ptsOverride ?? null, e.uid, e.attachTo || '', e.ex || []]) };
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(d))));
   return 'MUSTER2:' + b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -524,7 +543,7 @@ function listBody(l, f) {
   ${issues.length ? `<div class="issues ${errs ? 'has-err' : ''}"><button class="issues-h" data-act="toggleIssues">${errs ? `⚠ ${plural(errs, 'problem')}` : '✓ Legal'}${issues.length - errs ? ` · ${plural(issues.length - errs, 'note')}` : ''}<span>${S.showIssues ? '▾' : '▸'}</span></button>
     ${S.showIssues ? `<ul>${issues.map((i) => `<li class="${i.level}">${esc(i.msg)}</li>`).join('')}</ul>` : ''}</div>` : l.units.length ? `<div class="issues ok"><div class="issues-h">✓ Legal list</div></div>` : ''}
   ${groupEntries(l, f)
-    .map(([role, entries]) => `<section><h3 class="sec">${esc(role)} <span class="muted">${entries.reduce((t, e) => t + entryPts(e, f), 0)}</span></h3>
+    .map(([role, entries]) => `<section><h3 class="sec">${esc(role)} <span class="muted">${entries.reduce((t, e) => t + entryPts(e, f, l), 0)}</span></h3>
       ${entries.map((e) => entryRow(e, l, f)).join('')}</section>`)
     .join('')}
   ${l.units.length ? '' : `<div class="empty small"><p class="muted">No units yet — tap “Add unit”.</p></div>`}
@@ -537,12 +556,14 @@ function entryRow(e, l, f) {
   const en = e.enh && f.enhById.get(e.enh);
   const host = e.attachTo && l.units.find((x) => x.uid === e.attachTo);
   const sub = [];
-  if (u && u.c.length > 1) sub.push(esc(costOpt(u, e).d));
+  if (u && u.c.length > 1) sub.push(esc(costOpt(u, e, l).d));
+  const co = u && costOpt(u, e, l);
+  if (co && co.step) sub.push(`<span class="warn">${esc(co.step)}</span>`);
   if (en) sub.push(`✦ ${esc(en.n)}`);
   if (e.notes) sub.push(esc(e.notes.split('\n')[0]));
   return `<button class="entry ${host ? 'attached' : ''}" data-act="editEntry" data-uid="${e.uid}">
     <div class="en-main"><div class="en-name">${host ? '<span class="muted">↳ </span>' : ''}${e.warlord ? '<span class="crown">♛</span>' : ''}${esc(e.name)}${u ? '' : ' <span class="warn">(missing)</span>'}</div>
-    ${sub.length ? `<div class="en-sub">${sub.join(' · ')}</div>` : ''}</div><div class="en-pts">${entryPts(e, f)}</div></button>`;
+    ${sub.length ? `<div class="en-sub">${sub.join(' · ')}</div>` : ''}</div><div class="en-pts">${entryPts(e, f, l)}</div></button>`;
 }
 
 function pickDetachments() {
@@ -652,13 +673,15 @@ function editEntry(entryUid) {
       if (u && u.enh.length && !allEnh) enhs = enhs.filter((x) => u.enh.includes(x.id) || x.id === e.enh);
       const canEnh = u && !u.epic && (u.character || f.enhancements.some((x) => x.up && u.enh.includes(x.id)));
       const hosts = u ? l.units.filter((x) => x.uid !== e.uid && u.leads.includes(x.unitId)) : [];
-      const auto = entryPts({ ...e, ptsOverride: null }, f);
+      const auto = entryPts({ ...e, ptsOverride: null }, f, l);
+      const co = u ? costOpt(u, e, l) : null;
       return `${head(e.name)}<div class="sheet-body">
-        <div class="big-pts">${entryPts(e, f)} <span>pts</span></div>
+        <div class="big-pts">${entryPts(e, f, l)} <span>pts</span></div>${co && co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
         ${u && u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => `<button class="chip ${(e.cost || 0) === i ? 'on' : ''}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}</button>`).join('')}</div>` : ''}
+        ${u && u.cx && u.cx.length ? u.cx.map((b, bi) => `<label class="lbl">${esc(b.label || 'Options')}</label><div class="chips">${b.rows.map((r, ri) => `<button class="chip ${(e.ex || []).includes(bi + ':' + ri) ? 'on' : ''}" data-act="toggleEx" data-uid="${e.uid}" data-v="${bi}:${ri}">${esc(r.d)} · +${r.pts}</button>`).join('')}</div>`).join('') : ''}
         ${u && u.character ? `<label class="toggle"><input type="checkbox" data-act="setWarlord" data-uid="${e.uid}" ${e.warlord ? 'checked' : ''}><span>Warlord</span></label>` : ''}
         ${u && u.leads.length ? `<label class="lbl">${u.sup ? 'Support' : 'Leading'}</label>
-          ${hosts.length ? `<div class="enh-list"><button class="enh ${e.attachTo ? '' : 'on'}" data-act="setAttach" data-uid="${e.uid}" data-v="">Not attached</button>${hosts.map((h) => `<button class="enh ${e.attachTo === h.uid ? 'on' : ''}" data-act="setAttach" data-uid="${e.uid}" data-v="${h.uid}"><span>${esc(h.name)}</span><span class="muted small">${entryPts(h, f)} pts</span></button>`).join('')}</div>` : `<p class="muted small">Can join: ${esc(u.leads.map((id) => f.unitById.get(id)?.n).filter(Boolean).join(', ') || '—')}. Add one of those to attach.</p>`}` : ''}
+          ${hosts.length ? `<div class="enh-list"><button class="enh ${e.attachTo ? '' : 'on'}" data-act="setAttach" data-uid="${e.uid}" data-v="">Not attached</button>${hosts.map((h) => `<button class="enh ${e.attachTo === h.uid ? 'on' : ''}" data-act="setAttach" data-uid="${e.uid}" data-v="${h.uid}"><span>${esc(h.name)}</span><span class="muted small">${entryPts(h, f, l)} pts</span></button>`).join('')}</div>` : `<p class="muted small">Can join: ${esc(u.leads.map((id) => f.unitById.get(id)?.n).filter(Boolean).join(', ') || '—')}. Add one of those to attach.</p>`}` : ''}
         ${canEnh ? `<label class="lbl">Enhancement</label>
           ${l.detachments.length || allEnh ? `<div class="enh-list"><button class="enh ${e.enh ? '' : 'on'}" data-act="setEnh" data-uid="${e.uid}" data-v="">None</button>
           ${enhs.map((x) => `<button class="enh ${e.enh === x.id ? 'on' : ''} ${taken.has(x.id) ? 'taken' : ''}" data-act="setEnh" data-uid="${e.uid}" data-v="${x.id}"><span>${esc(x.n)}<span class="muted small"> · ${esc(x.dn)}${taken.has(x.id) ? ' · taken' : ''}</span></span><span class="pts">+${x.pts}</span></button>`).join('') || '<p class="muted small">None available from your detachments.</p>'}</div>` : '<p class="muted small">Choose a detachment to see enhancements.</p>'}
@@ -717,6 +740,8 @@ function datasheet(u, f) {
   ${u.load ? `<div class="rule">${rich(u.load)}</div>` : ''}
   ${u.opt.length ? `<div class="rule"><b>Wargear options</b><ul class="opts">${u.opt.map((o) => `<li>${rich(o)}</li>`).join('')}</ul></div>` : ''}
   <h3 class="ds-h">Points</h3><div class="chips">${u.c.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('') || '<span class="muted">—</span>'}</div>
+  ${(u.cx || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>+${c.pts}</b></span>`).join('')}</div>`).join('')}
+  ${(u.cs || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('')}</div>`).join('')}
   ${u.mkw.length ? `<p class="muted small">${esc(u.mkw.join(' · '))}</p>` : ''}
   <p class="muted small">Faction keywords: ${esc(u.fkw.join(', '))}${u.src ? ` · Source: ${esc(u.src)}` : ''}</p>
   ${u.link ? `<p class="small"><a href="${esc(u.link)}" target="_blank" rel="noopener">View on Wahapedia ↗</a></p>` : ''}`;
@@ -1143,7 +1168,7 @@ const A = {
     const units = d.u.map(([unitId, cost, enh, wl, notes, name, po, oldUid, attachTo]) => {
       const nu = uid();
       map.set(oldUid, nu);
-      return { uid: nu, unitId, cost, enh, warlord: !!wl, notes, ptsOverride: po ?? null, attachTo, name: f.unitById.get(unitId)?.n || name, lastPts: 0 };
+      return { uid: nu, unitId, cost, enh, warlord: !!wl, notes, ptsOverride: po ?? null, attachTo, ex: ex || [], name: f.unitById.get(unitId)?.n || name, lastPts: 0 };
     });
     units.forEach((e) => (e.attachTo = map.get(e.attachTo) || ''));
     const l = { id: uid(), name: d.n || 'Imported list', factionId: d.f, factionName: f.n, size: d.s || 'strike', limits: d.L || { ...SIZES.strike }, detachments: d.d || [], disposition: d.fd || '', units, created: Date.now(), updated: Date.now() };
@@ -1270,7 +1295,7 @@ const A = {
   setCost: (el) => {
     const e = entryOf(el);
     e.cost = +el.dataset.v;
-    e.lastPts = entryPts(e, factions.get(curList().factionId));
+    e.lastPts = entryPts(e, factions.get(curList().factionId), curList());
     touch(curList());
     rerenderTopSheet();
   },
@@ -1283,7 +1308,7 @@ const A = {
   setEnh: (el) => {
     const e = entryOf(el);
     e.enh = el.dataset.v;
-    e.lastPts = entryPts(e, factions.get(curList().factionId));
+    e.lastPts = entryPts(e, factions.get(curList().factionId), curList());
     touch(curList());
     rerenderTopSheet();
   },
@@ -1294,6 +1319,13 @@ const A = {
     rerenderTopSheet();
   },
   toggleAllEnh: () => allEnhHandler?.(),
+  toggleEx: (el) => {
+    const e = entryOf(el);
+    const v = el.dataset.v;
+    e.ex = (e.ex || []).includes(v) ? e.ex.filter((x) => x !== v) : [...(e.ex || []), v];
+    touch(curList());
+    rerenderTopSheet();
+  },
   dupEntry: (el) => {
     const l = curList();
     const e = entryOf(el);

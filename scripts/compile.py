@@ -103,11 +103,17 @@ def unit(ds):
         m = re.search(r'(\d+)\s+models?', c['description'])
         blocks[-1]['rows'].append({'d': c['description'], 'pts': num(c['cost']), 'models': int(m.group(1)) if m else None})
     blocks = [b for b in blocks if b['rows']]
-    costs = blocks[0]['rows'] if blocks else []
-    steps = []
-    for b in blocks[1:]:
-        o = re.search(r'(\d+)\s*(?:st|nd|rd|th)', b['label'], re.I)
-        steps.append({'label': b['label'], 'from': int(o.group(1)) if o else 2, 'rows': b['rows']})
+    step_re = re.compile(r'(\d+)\s*(?:st|nd|rd|th)\s*\+', re.I)
+    base, steps, extras = None, [], []
+    for b in blocks:
+        o = step_re.search(b['label'])
+        if o:
+            steps.append({'label': b['label'], 'from': int(o.group(1)), 'rows': b['rows']})
+        elif base is None and (not b['label'] or b['label'].upper().startswith('YOUR') or not extras):
+            base = b
+        else:
+            extras.append({'label': b['label'], 'rows': b['rows']})
+    costs = base['rows'] if base else []
     weapons, seen = [], set()
     for w in sorted(g['Datasheets_wargear'], key=lambda r: (num(r['line']), num(r['line_in_wargear']))):
         key = (w['name'], w['range'], w['A'], w['BS_WS'], w['S'], w['AP'], w['D'], w['description'])
@@ -138,7 +144,7 @@ def unit(ds):
         'sup': ds['is_support'] == 'true', 'lh': ds['leader_head'], 'lf': ds['leader_footer'],
         'load': ds['loadout'], 'tr': ds['transport'],
         'dmg': {'w': ds['damaged_w'], 'd': ds['damaged_description']} if ds['damaged_w'] else None,
-        'link': ds['link'], 'm': models, 'c': costs, 'cs': steps, 'w': weapons, 'ab': ab, 'refs': refs,
+        'link': ds['link'], 'm': models, 'c': costs, 'cs': steps, 'cx': extras, 'w': weapons, 'ab': ab, 'refs': refs,
         'kw': kw, 'mkw': mkw, 'fkw': fkw,
         'character': 'character' in kwl, 'epic': 'epic hero' in kwl, 'battleline': 'battleline' in kwl,
         'dt': 'dedicated transport' in kwl or ds['role'] == 'Dedicated Transports',
