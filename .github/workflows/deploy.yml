@@ -31,10 +31,6 @@ jobs:
         run: python3 scripts/compile.py
       - name: Compile missions
         run: python3 scripts/missions.py
-      - name: Dev sample (temporary)
-        run: |
-          tar czf /tmp/s.tgz -C site/data missions.json maps index.json core.json f/GC.json f/LoV.json
-          echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/s.tgz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)

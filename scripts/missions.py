@@ -61,7 +61,7 @@ def main():
             who = re.findall(r'title="Force Disposition: ([^"]+)"', row)
             mn = re.search(r'class="caFdMissionName">(.*)', row, re.S)
             if len(who) >= 2 and mn:
-                matrix.setdefault(who[0], {})[who[1]] = title_case(text(mn.group(1)))
+                matrix.setdefault(who[0], {})[who[1]] = title_case(text(re.sub(r'<[^>]*$', '', mn.group(1))))
     prim = []
     for card in A.get('ContentPM', []):
         fd = re.search(r'ca7HeadPM ca7Head(\w+)', card)

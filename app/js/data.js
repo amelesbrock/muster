@@ -85,3 +85,13 @@ export function diffPoints(oldF, newF) {
   }
   return out;
 }
+
+// Chapter Approved mission deck (compiled from Wahapedia's mission deck page)
+export async function cachedMissions() {
+  return store.get('kv', 'missions');
+}
+export async function downloadMissions() {
+  const m = await getJson('missions.json');
+  await store.set('kv', 'missions', m);
+  return m;
+}

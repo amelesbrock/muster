@@ -27,7 +27,7 @@ const S = {
   core: null,
   cached: [], // faction ids on this device
   settings: {
-    caps: { primary: 50, secondary: 40, battleReady: 10, total: 100 },
+    caps: { primary: 50, secondary: 45, secondaryRound: 15, battleReady: 10, total: 100 },
     showLegends: false,
   },
   strat: { side: 'mine', listId: '', oppFaction: '', oppDets: [], allDets: false, core: true, phase: '', turn: '', q: '', open: {} },
@@ -68,6 +68,8 @@ function rich(html) {
         const cls = c.getAttribute('class') || '';
         for (const a of [...c.attributes]) c.removeAttribute(a.name);
         if (/kwb/.test(cls)) c.setAttribute('class', 'kwd');
+        const keep = cls.split(/\s+/).filter((x) => /^caPm\w+$/.test(x));
+        if (keep.length) c.setAttribute('class', keep.join(' '));
         if (/ShowFluff|legend/.test(cls)) c.setAttribute('class', 'fluff');
         walk(c);
       } else if (c.nodeType !== 3) c.remove();
@@ -157,6 +159,7 @@ async function ensureFaction(id) {
     factions.set(id, nf);
     S.cached = await data.cachedFactionIds();
     if (!S.core) S.core = await data.downloadCore().catch(() => null);
+    if (!S.missions) S.missions = await data.downloadMissions().catch(() => null);
     return nf;
   } finally {
     hideBusy();
@@ -1053,7 +1056,8 @@ async function oppPickSheet() {
 const activeGame = () => S.games.find((g) => g.id === S.activeGameId && !g.finished);
 function totals(p, caps) {
   const pri = Math.min(caps.primary, p.primary.reduce((a, b) => a + (+b || 0), 0));
-  const sec = Math.min(caps.secondary, p.secondary.reduce((a, b) => a + (+b || 0), 0));
+  const rc = caps.secondaryRound || Infinity;
+  const sec = Math.min(caps.secondary, p.secondary.reduce((a, b) => a + Math.min(rc, +b || 0), 0));
   const br = p.battleReady ? caps.battleReady : 0;
   return { pri, sec, br, total: Math.min(caps.total, pri + sec + br) };
 }
@@ -1069,12 +1073,13 @@ function viewBattle() {
   return `<header class="top"><div class="top-title"><div class="tt-name">${esc(g.mission || 'Battle')}</div><div class="tt-sub">Battle round ${r} of 5</div></div><button class="icon" data-act="gameMenu" aria-label="Game options">⋯</button></header>
   <main class="pad battle">
     <div class="rounds">${[1, 2, 3, 4, 5].map((n) => `<button class="rnd ${n === r ? 'on' : ''} ${n < r ? 'done' : ''}" data-act="setRound" data-v="${n}">${n}</button>`).join('')}</div>
+    ${missionPanel(g)}
     <div class="players">${g.players
       .map((p, i) => `<div class="pcard ${lead === i ? 'lead' : ''}">
         <button class="pc-name" data-act="renamePlayer" data-i="${i}">${esc(p.name)}</button><div class="pc-fac muted">${esc(p.faction || '')}</div>
         <div class="pc-total"><b>${T[i].total}</b><span>VP</span></div><div class="pc-split muted">P ${T[i].pri} · S ${T[i].sec}${p.battleReady ? ` · BR ${T[i].br}` : ''}</div>
         ${stepper('CP', p.cp, `cp:${i}`)}${stepper(`Primary R${r}`, p.primary[r - 1], `pri:${i}`)}${stepper(`Secondary R${r}`, p.secondary[r - 1], `sec:${i}`)}
-        <input class="secnote" data-bind="secNote" data-i="${i}" placeholder="Secondaries" value="${esc(p.secNames || '')}">
+        <button class="secbtn" data-act="secSheet" data-i="${i}"><span class="muted small">${p.sec?.mode === 'fixed' ? 'Fixed' : 'Tactical'} secondaries</span>${secActive(p).map((n) => `<div class="secname">${esc(n)}</div>`).join('') || '<div class="muted small">Tap to choose / draw</div>'}</button>
         <label class="toggle small"><input type="checkbox" data-act="toggleBR" data-i="${i}" ${p.battleReady ? 'checked' : ''}><span>Battle ready (+${g.caps.battleReady})</span></label>
         <div class="pc-links">${p.listId ? `<button class="link" data-act="openPlayerList" data-i="${i}">Army</button>` : ''}<button class="link" data-act="playerStrats" data-i="${i}">Stratagems</button></div>
       </div>`)
@@ -1085,42 +1090,76 @@ function viewBattle() {
     <table class="score"><thead><tr><th>Rnd</th><th colspan="2">${esc(g.players[0].name)}</th><th colspan="2">${esc(g.players[1].name)}</th></tr><tr class="sub"><th></th><th>Pri</th><th>Sec</th><th>Pri</th><th>Sec</th></tr></thead><tbody>
     ${[0, 1, 2, 3, 4].map((k) => `<tr class="${k === r - 1 ? 'cur' : ''}"><td>${k + 1}</td><td>${g.players[0].primary[k] || 0}</td><td>${g.players[0].secondary[k] || 0}</td><td>${g.players[1].primary[k] || 0}</td><td>${g.players[1].secondary[k] || 0}</td></tr>`).join('')}
     <tr class="tot"><td>Σ</td><td>${T[0].pri}</td><td>${T[0].sec}</td><td>${T[1].pri}</td><td>${T[1].sec}</td></tr></tbody></table>
-    <p class="muted small center">Caps: primary ${g.caps.primary}, secondary ${g.caps.secondary}, total ${g.caps.total} — change in ⚙ Settings.</p>
+    <p class="muted small center">Caps: primary ${g.caps.primary}, secondary ${g.caps.secondary}${g.caps.secondaryRound ? ` (${g.caps.secondaryRound} per round)` : ''}, total ${g.caps.total} — change in ⚙ Settings.</p>
   </main>`;
 }
 function viewBattleHome() {
   const past = S.games.filter((g) => g.finished).sort((a, b) => b.created - a.created);
   return `<header class="top"><div class="brand"><span class="logo">⚔</span> Battle</div><div class="grow"></div>${gear}</header><main class="pad">
     <button class="btn primary block" data-act="newGame">＋ Start a new game</button>
+    <button class="btn ghost block" data-act="missionsBrowser">📖 Missions & cards</button>
     ${past.length ? `<h3 class="sec">Past games</h3><div class="stack">${past.map((g) => {
       const t = g.players.map((p) => totals(p, g.caps).total);
       return `<button class="card list-card" data-act="viewGame" data-id="${g.id}"><div class="lc-main"><div class="lc-name">${esc(g.players[0].name)} vs ${esc(g.players[1].name)}</div><div class="lc-sub">${esc(g.mission || 'Battle')} · ${fmtDate(new Date(g.created).toISOString())}</div><div class="lc-sub">${t[0] === t[1] ? 'Draw' : esc(g.players[t[0] > t[1] ? 0 : 1].name) + ' won'}</div></div><div class="lc-pts"><b>${t[0]}–${t[1]}</b></div></button>`;
     }).join('')}</div>` : `<div class="empty"><div class="empty-ico">🎲</div><p class="muted">Track VP, CP and secondaries round by round. Stratagems you use from the Stratagems tab deduct CP here.</p></div>`}
   </main>`;
 }
+async function ensureMissions() {
+  if (S.missions) return S.missions;
+  try {
+    S.missions = await data.downloadMissions();
+  } catch {
+    S.missions = null;
+  }
+  return S.missions;
+}
+const FD_NAMES = ['Take and Hold', 'Purge the Foe', 'Disruption', 'Reconnaissance', 'Priority Assets'];
+const fdList = () => (S.missions?.fds?.length ? S.missions.fds.map((x) => x.n) : FD_NAMES);
+function primaryFor(mine, theirs) {
+  return S.missions?.matrix?.[mine]?.[theirs] || '';
+}
+const cardByName = (list, n) => (list || []).find((c) => c.n.toLowerCase() === String(n || '').toLowerCase());
+
 async function newGameSheet() {
   const idx = await ensureIndex().catch(() => null);
+  await ensureMissions();
+  const draft = { fd0: '', fd1: '' };
+  const fdOpts = (sel) => `<option value="">Choose…</option>${fdList().map((x) => `<option ${sel === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}`;
   showSheet(
     () => `${head('New game')}<div class="sheet-body">
-      <label class="lbl">Mission</label><input id="ngMission" placeholder="e.g. Take and Hold">
       <label class="lbl">You</label><input id="ngName0" value="Me">
-      <select id="ngList0"><option value="">No list</option>${S.lists.map((l) => `<option value="${l.id}">${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>
+      <select id="ngList0" data-bind="ngList0"><option value="">No list</option>${S.lists.map((l) => `<option value="${l.id}">${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>
+      <div class="grid2"><label class="small muted">Force Disposition<select id="ngFd0">${fdOpts(draft.fd0)}</select></label>
+      <label class="small muted">Secondaries<select id="ngSec0"><option value="tactical">Tactical</option><option value="fixed">Fixed</option></select></label></div>
       <label class="lbl">Opponent</label><input id="ngName1" value="Opponent">
       <select id="ngList1"><option value="">Their list isn't on this phone</option>${S.lists.map((l) => `<option value="${l.id}">${esc(l.name)} (${esc(l.factionName)})</option>`).join('')}</select>
       ${idx ? `<select id="ngFac1"><option value="">Opponent faction (for stratagems)…</option>${idx.factions.map((x) => `<option value="${x.id}">${esc(x.n)}</option>`).join('')}</select>` : ''}
+      <div class="grid2"><label class="small muted">Force Disposition<select id="ngFd1">${fdOpts(draft.fd1)}</select></label>
+      <label class="small muted">Secondaries<select id="ngSec1"><option value="tactical">Tactical</option><option value="fixed">Fixed</option></select></label></div>
+      ${S.missions ? `<label class="lbl">Battlefield</label><div class="grid2">
+        <label class="small muted">Deployment<select id="ngDep"><option value="">Choose later</option><option value="?">🎲 Random</option>${S.missions.deployments.map((d) => `<option>${esc(d.n)}</option>`).join('')}</select></label>
+        <label class="small muted">Twist<select id="ngTw"><option value="">None</option><option value="?">🎲 Random</option>${S.missions.twists.map((d) => `<option>${esc(d.n)}</option>`).join('')}</select></label></div>` : '<p class="muted small">Mission cards will appear once the data has downloaded.</p>'}
+      <label class="lbl">Game name (optional)</label><input id="ngMission" placeholder="e.g. Friday night grudge match">
     </div><div class="sheet-foot"><button class="btn primary block" data-act="ngStart">Start game</button></div>`,
     { tall: true }
   );
 }
 function startGame() {
+  const pick = (list, v) => (v === '?' ? list[Math.floor(Math.random() * list.length)]?.n || '' : v);
   const g = { id: uid(), created: Date.now(), mission: $('#ngMission').value.trim(), round: 1, finished: false, caps: { ...S.settings.caps }, log: [], players: [] };
+  if (S.missions) {
+    g.deployment = pick(S.missions.deployments, $('#ngDep')?.value || '');
+    g.twist = pick(S.missions.twists, $('#ngTw')?.value || '');
+  }
   for (const i of [0, 1]) {
     const listId = $('#ngList' + i).value;
     const l = S.lists.find((x) => x.id === listId);
     const fac = i === 1 && !l ? $('#ngFac1')?.value || '' : l?.factionId || '';
     const facName = l ? l.factionName : S.index?.factions.find((x) => x.id === fac)?.n || '';
-    g.players.push({ name: $('#ngName' + i).value.trim() || `Player ${i + 1}`, listId, factionId: fac, faction: facName, cp: 0, battleReady: false, primary: [0, 0, 0, 0, 0], secondary: [0, 0, 0, 0, 0], secNames: '' });
+    g.players.push({ name: $('#ngName' + i).value.trim() || `Player ${i + 1}`, listId, factionId: fac, faction: facName, cp: 0, battleReady: false, primary: [0, 0, 0, 0, 0], secondary: [0, 0, 0, 0, 0], secNames: '',
+      fd: $('#ngFd' + i)?.value || (l && l.disposition) || '', sec: { mode: $('#ngSec' + i)?.value || 'tactical', fixed: [], active: [], discard: [], swapUsed: false } });
   }
+  for (const [i, p] of g.players.entries()) p.pm = primaryFor(p.fd, g.players[1 - i].fd);
   S.games.push(g);
   S.activeGameId = g.id;
   // point the stratagem tab at this game
@@ -1139,7 +1178,101 @@ function startGame() {
 }
 function gameSummary(g) {
   const t = g.players.map((p) => totals(p, g.caps));
-  return [`${g.mission || 'Battle'} — ${fmtDate(new Date(g.created).toISOString())}`, ...g.players.map((p, i) => `${p.name}${p.faction ? ' (' + p.faction + ')' : ''}: ${t[i].total} VP (Primary ${t[i].pri}, Secondary ${t[i].sec}${p.battleReady ? ', Battle ready ' + t[i].br : ''})`), '', 'Round by round (Pri/Sec):', ...[0, 1, 2, 3, 4].map((k) => `R${k + 1}: ${g.players.map((p) => `${p.primary[k] || 0}/${p.secondary[k] || 0}`).join('  vs  ')}`)].join('\n');
+  return [`${g.mission || 'Battle'} — ${fmtDate(new Date(g.created).toISOString())}`, g.deployment ? `Deployment: ${g.deployment}${g.twist ? ' · Twist: ' + g.twist : ''}` : '', ...g.players.map((p, i) => `${p.name}${p.faction ? ' (' + p.faction + ')' : ''}${p.pm ? ' [' + p.pm + ']' : ''}: ${t[i].total} VP (Primary ${t[i].pri}, Secondary ${t[i].sec}${p.battleReady ? ', Battle ready ' + t[i].br : ''})`), '', 'Round by round (Pri/Sec):', ...[0, 1, 2, 3, 4].map((k) => `R${k + 1}: ${g.players.map((p) => `${p.primary[k] || 0}/${p.secondary[k] || 0}`).join('  vs  ')}`)].join('\n');
+}
+
+// ---------------------------------------------------------------- Missions
+function missionPanel(g) {
+  if (!g.players.some((p) => p.fd || p.pm) && !g.deployment) {
+    return `<button class="card mission-card" data-act="gameMission"><span class="muted small">Mission</span><div class="warn">Set Force Dispositions…</div></button>`;
+  }
+  return `<button class="card mission-card" data-act="gameMission">
+    <div class="mc-grid">${g.players.map((p) => `<div><div class="muted small">${esc(p.name)} · ${esc(p.fd || '—')}</div><div class="mc-pm">${esc(p.pm || 'No primary')}</div></div>`).join('')}</div>
+    ${g.deployment || g.twist ? `<div class="muted small mt">${g.deployment ? '🗺 ' + esc(g.deployment) : ''}${g.twist ? ' · ⚡ ' + esc(g.twist) : ''}</div>` : ''}</button>`;
+}
+
+function cardHtml(c, kind) {
+  if (!c) return '<p class="muted">Card text not available.</p>';
+  return `<div class="mcard ${kind || ''}"><div class="mcard-h"><b>${esc(c.n)}</b>${c.fixed ? ' <span class="tag">Fixed values</span>' : ''}</div>
+    ${c.fluff ? `<p class="muted small fl">${esc(c.fluff)}</p>` : ''}${c.img ? `<img class="map" src="./data/${esc(c.img)}" alt="${esc(c.n)} deployment map">` : ''}<div class="mcard-b">${rich(c.d || '')}</div></div>`;
+}
+
+function gameMissionSheet() {
+  const g = activeGame();
+  const M = S.missions;
+  const sel = (id, list, cur, blank) => `<select data-bind="${id}"><option value="">${blank}</option>${list.map((x) => `<option ${x === cur ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`;
+  showSheet(
+    () => `${head('Mission')}<div class="sheet-body">
+      ${g.players
+        .map((p, i) => `<label class="lbl">${esc(p.name)}</label><div class="grid2">
+          <label class="small muted">Force Disposition${sel('gFd' + i, fdList(), p.fd, 'Choose…')}</label>
+          <label class="small muted">Primary mission${sel('gPm' + i, (M?.primary || []).map((x) => x.n), p.pm, '—')}</label></div>`)
+        .join('')}
+      ${M ? `<div class="grid2"><label class="small muted">Deployment${sel('gDep', M.deployments.map((x) => x.n), g.deployment, '—')}</label><label class="small muted">Twist${sel('gTw', M.twists.map((x) => x.n), g.twist, 'None')}</label></div>
+        <div class="row gap"><button class="btn ghost small grow" data-act="gSwapPm">⇄ Swap primaries</button><button class="btn ghost small grow" data-act="gRollDep">🎲 Deployment</button></div>` : ''}
+      ${M ? g.players.map((p) => (p.pm ? `<h3 class="sec">Primary — ${esc(p.name)}</h3>${cardHtml(cardByName(M.primary, p.pm), 'pm')}` : '')).join('') : '<p class="muted">Mission cards haven’t downloaded yet.</p>'}
+      ${M && g.deployment ? `<h3 class="sec">Deployment</h3>${cardHtml(cardByName(M.deployments, g.deployment), 'dp')}` : ''}
+      ${M && g.twist ? `<h3 class="sec">Twist</h3>${cardHtml(cardByName(M.twists, g.twist), 'tw')}` : ''}
+    </div>`,
+    { tall: true, onClose: () => rerender() }
+  );
+}
+
+// Secondaries: Tactical (draw two each Command phase) or Fixed (two chosen cards)
+function secActive(p) {
+  if (!p.sec) return p.secNames ? [p.secNames] : [];
+  return p.sec.mode === 'fixed' ? p.sec.fixed : p.sec.active;
+}
+function secSheet(i) {
+  const g = activeGame();
+  const p = g.players[i];
+  p.sec = p.sec || { mode: 'tactical', fixed: [], active: [], discard: [], swapUsed: false };
+  const M = S.missions;
+  showSheet(
+    () => {
+      const sc = p.sec;
+      const all = M?.secondary || [];
+      const deck = all.filter((c) => !sc.active.includes(c.n) && !sc.discard.includes(c.n));
+      return `${head(`${p.name} — secondaries`)}<div class="sheet-body">
+        <div class="seg">${['tactical', 'fixed'].map((m) => `<button class="${sc.mode === m ? 'on' : ''}" data-act="secMode" data-i="${i}" data-v="${m}">${m === 'tactical' ? 'Tactical' : 'Fixed'}</button>`).join('')}</div>
+        ${!M ? '<p class="muted">Secondary cards haven’t downloaded yet.</p>' : sc.mode === 'fixed'
+          ? `<p class="muted small">Choose two cards to score all game.</p>${all.map((c) => `<button class="frow ${sc.fixed.includes(c.n) ? 'on' : ''}" data-act="secFix" data-i="${i}" data-n="${esc(c.n)}"><span>${sc.fixed.includes(c.n) ? '✓ ' : ''}${esc(c.n)}</span>${c.fixed ? '<span class="tag">Fixed values</span>' : ''}</button>`).join('')}
+             ${sc.fixed.map((n) => cardHtml(cardByName(all, n))).join('')}`
+          : `<div class="row gap"><button class="btn primary grow" data-act="secDraw" data-i="${i}" ${sc.active.length >= 2 || !deck.length ? 'disabled' : ''}>Draw to 2 (${deck.length} left)</button>
+             <button class="btn ghost" data-act="secReset" data-i="${i}">Reshuffle</button></div>
+             <p class="muted small">Draw at the start of your Command phase. Once per battle you can spend 1CP to discard one and draw a new one${sc.swapUsed ? ' — <b>used</b>' : ''}.</p>
+             ${sc.active.map((n) => `${cardHtml(cardByName(all, n))}<div class="row gap mb"><button class="btn small primary grow" data-act="secDone" data-i="${i}" data-n="${esc(n)}">✓ Achieved</button><button class="btn small ghost grow" data-act="secDiscard" data-i="${i}" data-n="${esc(n)}">Discard</button>${sc.swapUsed ? '' : `<button class="btn small ghost grow" data-act="secSwap" data-i="${i}" data-n="${esc(n)}">New card (1CP)</button>`}</div>`).join('')}
+             ${sc.discard.length ? `<p class="muted small">Discarded / achieved: ${esc(sc.discard.join(', '))}</p>` : ''}`}
+      </div>`;
+    },
+    { tall: true, onClose: () => rerender() }
+  );
+}
+
+const MB = { tab: 'match', fd0: 'Take and Hold', fd1: 'Purge the Foe' };
+async function missionsBrowser() {
+  const M = await ensureMissions();
+  if (!M) return toast('Mission cards are not available yet');
+  showSheet(
+    () => {
+      const tabs = [['match', 'Matchups'], ['pm', 'Primary'], ['sm', 'Secondary'], ['dp', 'Maps'], ['tw', 'Twists']];
+      let body = '';
+      if (MB.tab === 'match') {
+        const fds = fdList();
+        body = `<label class="lbl">Your Force Disposition</label><div class="chips">${fds.map((f) => `<button class="chip ${MB.fd0 === f ? 'on' : ''}" data-act="mbFd" data-w="0" data-v="${esc(f)}">${esc(f)}</button>`).join('')}</div>
+          <label class="lbl">Opponent's</label><div class="chips">${fds.map((f) => `<button class="chip ${MB.fd1 === f ? 'on' : ''}" data-act="mbFd" data-w="1" data-v="${esc(f)}">${esc(f)}</button>`).join('')}</div>
+          <h3 class="sec">Your primary: ${esc(primaryFor(MB.fd0, MB.fd1) || '—')}</h3>${cardHtml(cardByName(M.primary, primaryFor(MB.fd0, MB.fd1)), 'pm')}
+          <h3 class="sec">Their primary: ${esc(primaryFor(MB.fd1, MB.fd0) || '—')}</h3>${cardHtml(cardByName(M.primary, primaryFor(MB.fd1, MB.fd0)), 'pm')}
+          <h3 class="sec">All matchups</h3><div class="mgrid-wrap"><table class="mgrid"><thead><tr><th>You ↓ / Opp →</th>${fds.map((f) => `<th>${esc(f)}</th>`).join('')}</tr></thead><tbody>
+          ${fds.map((a) => `<tr><th>${esc(a)}</th>${fds.map((b) => `<td>${esc(primaryFor(a, b))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      } else {
+        const list = { pm: M.primary, sm: M.secondary, dp: M.deployments, tw: M.twists }[MB.tab];
+        body = list.map((c) => `<details class="mdet"><summary>${esc(c.n)}${c.fixed ? ' <span class="tag">Fixed values</span>' : ''}</summary>${cardHtml(c, MB.tab)}</details>`).join('');
+      }
+      return `${head('Missions & cards')}<div class="sheet-sub"><div class="chips scroll">${tabs.map(([k, n]) => `<button class="chip ${MB.tab === k ? 'on' : ''}" data-act="mbTab" data-v="${k}">${n}</button>`).join('')}</div></div><div class="sheet-body">${body}</div>`;
+    },
+    { tall: true }
+  );
 }
 
 // ---------------------------------------------------------------- Settings
@@ -1156,7 +1289,7 @@ function settingsSheet() {
       <div class="stack tight">${S.cached.map((id) => `<div class="dl-row"><span>${esc(names(id))}</span><button class="icon small" data-act="removeFaction" data-id="${id}" aria-label="Remove">✕</button></div>`).join('') || '<p class="muted small">No factions saved yet.</p>'}</div>
       <h3 class="sec">Scoring caps</h3>
       <div class="grid2"><label>Primary<input inputmode="numeric" data-bind="cap" data-k="primary" value="${c.primary}"></label><label>Secondary<input inputmode="numeric" data-bind="cap" data-k="secondary" value="${c.secondary}"></label>
-      <label>Battle ready<input inputmode="numeric" data-bind="cap" data-k="battleReady" value="${c.battleReady}"></label><label>Total<input inputmode="numeric" data-bind="cap" data-k="total" value="${c.total}"></label></div>
+      <label>Secondary per round<input inputmode="numeric" data-bind="cap" data-k="secondaryRound" value="${c.secondaryRound ?? ''}"></label><label>Battle ready<input inputmode="numeric" data-bind="cap" data-k="battleReady" value="${c.battleReady}"></label><label>Total<input inputmode="numeric" data-bind="cap" data-k="total" value="${c.total}"></label></div>
       <h3 class="sec">Backup</h3><p class="muted small">Lists and games live only on this phone.</p>
       <div class="row gap"><button class="btn ghost grow" data-act="exportBackup">Export</button><label class="btn ghost grow filebtn">Import<input type="file" accept=".json,application/json" data-bind="importBackup" hidden></label></div>
       <p class="muted small center about">Data powered by <a href="https://wahapedia.ru" target="_blank" rel="noopener">Wahapedia</a>. Muster is an unofficial fan tool for personal use, not affiliated with Games Workshop. Check important rules against your official sources.</p>
@@ -1172,6 +1305,7 @@ async function updateData() {
     showBusy('Checking for new data…');
     S.index = await data.fetchIndex();
     S.core = await data.downloadCore().catch(() => S.core);
+    S.missions = await data.downloadMissions().catch(() => S.missions);
     for (const id of S.cached) {
       showBusy(`Updating ${S.index.factions.find((x) => x.id === id)?.n || id}…`);
       const old = await getFaction(id);
@@ -1547,6 +1681,91 @@ const A = {
     toast(`${el.dataset.n}: −${cp} CP (${g.players[p].cp} left)`);
     rerender();
   },
+  // missions
+  missionsBrowser: () => missionsBrowser(),
+  mbTab: (el) => {
+    MB.tab = el.dataset.v;
+    rerenderTopSheet();
+  },
+  mbFd: (el) => {
+    MB['fd' + el.dataset.w] = el.dataset.v;
+    rerenderTopSheet();
+  },
+  gameMission: async () => {
+    await ensureMissions();
+    gameMissionSheet();
+  },
+  gSwapPm: () => {
+    const g = activeGame();
+    [g.players[0].pm, g.players[1].pm] = [g.players[1].pm, g.players[0].pm];
+    save('games');
+    rerenderTopSheet();
+  },
+  gRollDep: () => {
+    const g = activeGame();
+    const d = S.missions.deployments;
+    g.deployment = d[Math.floor(Math.random() * d.length)].n;
+    save('games');
+    rerenderTopSheet();
+  },
+  secSheet: async (el) => {
+    await ensureMissions();
+    secSheet(+el.dataset.i);
+  },
+  secMode: (el) => {
+    activeGame().players[+el.dataset.i].sec.mode = el.dataset.v;
+    save('games');
+    rerenderTopSheet();
+  },
+  secFix: (el) => {
+    const sc = activeGame().players[+el.dataset.i].sec;
+    const n = el.dataset.n;
+    sc.fixed = sc.fixed.includes(n) ? sc.fixed.filter((x) => x !== n) : [...sc.fixed, n].slice(-2);
+    save('games');
+    rerenderTopSheet();
+  },
+  secDraw: (el) => {
+    const sc = activeGame().players[+el.dataset.i].sec;
+    const deck = S.missions.secondary.map((c) => c.n).filter((n) => !sc.active.includes(n) && !sc.discard.includes(n));
+    while (sc.active.length < 2 && deck.length) sc.active.push(deck.splice(Math.floor(Math.random() * deck.length), 1)[0]);
+    save('games');
+    rerenderTopSheet();
+  },
+  secDone: (el) => {
+    const sc = activeGame().players[+el.dataset.i].sec;
+    sc.active = sc.active.filter((x) => x !== el.dataset.n);
+    sc.discard.push(el.dataset.n);
+    save('games');
+    toast('Add the VP to this round’s Secondary score');
+    rerenderTopSheet();
+  },
+  secDiscard: (el) => {
+    const sc = activeGame().players[+el.dataset.i].sec;
+    sc.active = sc.active.filter((x) => x !== el.dataset.n);
+    sc.discard.push(el.dataset.n);
+    save('games');
+    rerenderTopSheet();
+  },
+  secSwap: (el) => {
+    const g = activeGame();
+    const p = g.players[+el.dataset.i];
+    const sc = p.sec;
+    if (p.cp < 1) return toast(`${p.name} has no CP`);
+    p.cp -= 1;
+    (g.log ||= []).push({ r: g.round, p: +el.dataset.i, n: `New secondary (${el.dataset.n})`, cp: 1 });
+    sc.swapUsed = true;
+    sc.active = sc.active.filter((x) => x !== el.dataset.n);
+    sc.discard.push(el.dataset.n);
+    A.secDraw(el);
+  },
+  secReset: (el) => {
+    const sc = activeGame().players[+el.dataset.i].sec;
+    sc.active = [];
+    sc.discard = [];
+    sc.swapUsed = false;
+    save('games');
+    rerenderTopSheet();
+  },
   // battle
   newGame: () => newGameSheet(),
   ngStart: () => startGame(),
@@ -1725,6 +1944,28 @@ document.addEventListener('change', async (e) => {
     touch(curList());
     rerenderTopSheet();
   }
+  if (/^gFd[01]$/.test(b || '')) {
+    const g = activeGame();
+    const i = +b.slice(-1);
+    g.players[i].fd = el.value;
+    for (const [k, p] of g.players.entries()) p.pm = primaryFor(p.fd, g.players[1 - k].fd) || p.pm;
+    save('games');
+    rerenderTopSheet();
+  }
+  if (/^gPm[01]$/.test(b || '')) {
+    activeGame().players[+b.slice(-1)].pm = el.value;
+    save('games');
+    rerenderTopSheet();
+  }
+  if (b === 'gDep' || b === 'gTw') {
+    activeGame()[b === 'gDep' ? 'deployment' : 'twist'] = el.value;
+    save('games');
+    rerenderTopSheet();
+  }
+  if (b === 'ngList0') {
+    const l = S.lists.find((x) => x.id === el.value);
+    if (l && l.disposition && $('#ngFd0')) $('#ngFd0').value = l.disposition;
+  }
   if (b === 'stList') {
     S.strat.listId = el.value;
     save('settings');
@@ -1786,11 +2027,14 @@ async function boot() {
   S.games = games || [];
   if (settings) {
     S.activeGameId = settings.activeGameId || null;
-    S.settings = { ...S.settings, showLegends: !!settings.showLegends, caps: { ...S.settings.caps, ...(settings.caps || {}) } };
+    const oldCaps = settings.caps || {};
+    if (oldCaps.secondary === 40 && oldCaps.secondaryRound == null) oldCaps.secondary = 45; // 10th edition default → 11th
+    S.settings = { ...S.settings, showLegends: !!settings.showLegends, caps: { ...S.settings.caps, ...oldCaps } };
     if (settings.strat) S.strat = { ...S.strat, ...settings.strat, open: {}, q: '' };
   }
   S.index = idx || null;
   S.core = core || null;
+  S.missions = (await data.cachedMissions()) || null;
   S.cached = await data.cachedFactionIds();
   for (const l of S.lists) await getFaction(l.factionId);
   if (S.strat.oppFaction) await getFaction(S.strat.oppFaction);
@@ -1814,6 +2058,7 @@ async function boot() {
       }
       if (changed) {
         S.core = await data.downloadCore().catch(() => S.core);
+        S.missions = await data.downloadMissions().catch(() => S.missions);
         toast('Game data updated');
         rerender();
       }
