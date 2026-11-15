@@ -432,6 +432,8 @@ function blocksOwned(u) {
 const owned = (u) => blocksOwned(u) * blockSize(u);
 const hasCollection = () => Object.values(S.collection).some((x) => (x.b ?? x.n) > 0);
 const blocksFor = (u, models) => Math.ceil(models / blockSize(u));
+// "2×5" for squads, just "2" for single-model units (characters, vehicles, monsters)
+const fmtB = (n, bs) => (bs === 1 ? `${n}` : `${n}×${bs}`);
 // boxes still available for this entry (owned minus those used by other entries)
 function freeBlocks(u, e, l, f) {
   let usedElsewhere = 0;
@@ -461,7 +463,7 @@ function collectionShortfalls(l, f) {
     if (!u) continue;
     const have = blocksOwned(u);
     const bs = blockSize(u);
-    if (n > have) out.push(have ? `${u.n}: list needs ${n}×${bs}, you own ${have}×${bs}.` : `${u.n}: not in your collection.`);
+    if (n > have) out.push(have ? `${u.n}: list needs ${fmtB(n, bs)}, you own ${fmtB(have, bs)}.` : `${u.n}: not in your collection.`);
   }
   return out;
 }
@@ -678,7 +680,7 @@ function viewCollection() {
               const c = S.collection[ckey(u.n)] || {};
               const bs = blockSize(u);
               const b = blocksOwned(u);
-              return `<div class="coll-row"><div class="grow"><div class="pn">${esc(u.n)}</div><div class="ps muted">${b ? `<span class="own">${b} × ${bs} = ${b * bs} model${b * bs === 1 ? '' : 's'}</span>` : `unit of ${bs}`}${c.note ? ` · <span class="note">${esc(c.note)}</span>` : ''}</div></div>
+              return `<div class="coll-row"><div class="grow"><div class="pn">${esc(u.n)}</div><div class="ps muted">${b ? `<span class="own">${bs === 1 ? `${b} model${b === 1 ? '' : 's'}` : `${b} × ${bs} = ${b * bs} models`}</span>` : bs === 1 ? 'single model' : `unit of ${bs}`}${c.note ? ` · <span class="note">${esc(c.note)}</span>` : ''}</div></div>
                 <button class="icon small" data-act="collNote" data-k="${esc(u.n)}" aria-label="Note">✎</button>
                 <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="-1" ${b ? '' : 'disabled'}>−</button>
                 <input class="st-v coll-n" inputmode="numeric" data-bind="collN" data-k="${esc(u.n)}" value="${b}">
@@ -923,7 +925,7 @@ function pickerResults(f, l) {
     const have = blocksOwned(u);
     const usedB = used.get(ckey(u.n)) || 0;
     const bs = blockSize(u);
-    const ownTag = hasCollection() && have ? ` <span class="tag ${usedB >= have ? 'used' : 'own'}">${usedB ? `${usedB}/${have}` : have}×${bs} owned</span>` : '';
+    const ownTag = hasCollection() && have ? ` <span class="tag ${usedB >= have ? 'used' : 'own'}">${usedB ? `${usedB}/` : ''}${fmtB(have, bs)} owned</span>` : '';
     return `<div class="pick-row ${hasCollection() && have && usedB >= have ? 'spent' : ''}"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}${ownTag}</div>
       <div class="ps muted">${u.c.length > 1 ? esc(u.c.map((c) => c.d).join(' / ')) : esc(u.c[0]?.d || '')}</div></button>
       <div class="pp">${pts}</div><button class="addbtn" data-act="pickAdd" data-id="${u.id}" aria-label="Add ${esc(u.n)}">＋</button></div>`;
@@ -993,7 +995,7 @@ function editEntry(entryUid) {
           const need = c.models ? blocksFor(u, c.models) : 0;
           const tight = hasCollection() && need && need > freeBlocks(u, e, l, f) ? 'short' : '';
           return `<button class="chip ${(e.cost || 0) === i ? 'on' : ''} ${tight}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}${hasCollection() && need > 1 ? ` <span class="small">(${need}×${blockSize(u)})</span>` : ''}</button>`;
-        }).join('')}</div>${hasCollection() ? `<p class="muted small">You own ${blocksOwned(u)} × ${blockSize(u)}; ${freeBlocks(u, e, l, f)} free for this unit.</p>` : ''}<div></div>` : ''}
+        }).join('')}</div>${hasCollection() ? `<p class="muted small">You own ${blockSize(u) === 1 ? blocksOwned(u) : `${blocksOwned(u)} × ${blockSize(u)}`}; ${freeBlocks(u, e, l, f)} free for this unit.</p>` : ''}<div></div>` : ''}
         ${u.cx && u.cx.some((b) => !/wargear/i.test(b.label)) ? u.cx.map((b, bi) => (/wargear/i.test(b.label) ? '' : `<label class="lbl">${esc(b.label || 'Options')}</label><div class="chips">${b.rows.map((r, ri) => `<button class="chip ${(e.ex || []).includes(bi + ':' + ri) ? 'on' : ''}" data-act="toggleEx" data-uid="${e.uid}" data-v="${bi}:${ri}">${esc(r.d)} · +${r.pts}</button>`).join('')}</div>`)).join('') : ''}
         ${u.character ? `<label class="toggle"><input type="checkbox" data-act="setWarlord" data-uid="${e.uid}" ${e.warlord ? 'checked' : ''}><span>Warlord</span></label>` : ''}
         ${u.leads.length ? `<label class="lbl">${u.sup ? 'Support — joins a unit even if it has a Leader' : 'Leading'}</label>
