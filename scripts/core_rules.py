@@ -42,6 +42,9 @@ def main():
         json.dump(core, fh, ensure_ascii=False, separators=(',', ':'))
     os.remove(SRC)
     print('weapon abilities:', len(out), sorted(out))
+    for k, v in out.items():
+        t = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', v['d'])).strip()
+        print('WA', k, len(t), '|', t[:110], '…', t[-90:])
 
 
 if __name__ == '__main__':
