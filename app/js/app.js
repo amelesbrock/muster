@@ -71,6 +71,8 @@ function rich(html) {
         const cls = c.getAttribute('class') || '';
         for (const a of [...c.attributes]) c.removeAttribute(a.name);
         if (/kwb/.test(cls)) c.setAttribute('class', 'kwd');
+        if (/hi_custom/.test(cls)) c.setAttribute('class', 'subh');
+        if (/redExample|blackComment/.test(cls)) c.setAttribute('class', 'callout');
         const keep = cls.split(/\s+/).filter((x) => /^caPm\w+$/.test(x));
         if (keep.length) c.setAttribute('class', keep.join(' '));
         if (/ShowFluff|legend/.test(cls)) c.setAttribute('class', 'fluff');

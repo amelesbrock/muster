@@ -408,3 +408,8 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .tag.used { color: var(--amber); border-color: rgba(226,168,66,.45); }
 .own { color: var(--green); }
 .pick-row.spent .pn { opacity: .7; }
+.subh { display: block; margin: 10px 0 2px; font-weight: 800; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 12.5px; border-bottom: 1px solid rgba(201,161,74,.35); padding-bottom: 2px; }
+.callout { background: rgba(255,255,255,.04); border-left: 3px solid var(--muted); border-radius: 6px; padding: 6px 10px; margin: 6px 0; font-size: 13px; }
+.rule ul { margin: 4px 0; padding-left: 20px; }
+.rule li { margin: 2px 0; }
+.kwd, .rule .kwd, .st-body .kwd { font-variant: normal; text-transform: uppercase; font-size: .86em; font-weight: 750; letter-spacing: .03em; }
