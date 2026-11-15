@@ -32,6 +32,9 @@ const S = {
   },
   strat: { side: 'mine', listId: '', oppFaction: '', oppDets: [], allDets: false, core: true, phase: '', turn: '', q: '', open: {} },
   showIssues: true,
+  collection: {}, // { [datasheet name key]: { n: models owned, note } }
+  collView: null, // { factionId, q, open: {} } while the collection screen is open
+  pickOwned: false,
 };
 const factions = new Map();
 let deferredInstall = null;
@@ -126,6 +129,7 @@ const hideBusy = () => $('#busy').classList.remove('show');
 async function save(what) {
   if (!what || what === 'lists') await store.set('kv', 'lists', S.lists);
   if (!what || what === 'games') await store.set('kv', 'games', S.games);
+  if (!what || what === 'collection') await store.set('kv', 'collection', S.collection);
   if (!what || what === 'settings') await store.set('kv', 'settings', { ...S.settings, activeGameId: S.activeGameId, strat: { ...S.strat, open: {}, q: '' } });
 }
 
@@ -301,6 +305,7 @@ function validate(l, f) {
     if (u && !isUnlocked(u, l)) out.push({ level: 'error', msg: `${u.n} (${u.xg}) needs the ${u.xu.map((id) => f.detById.get(id)?.n).filter(Boolean).join(' or ')} detachment.` });
     if (u && u.legends) out.push({ level: 'warn', msg: `${u.n} is a Legends unit — not usable in matched play.` });
   }
+  for (const w of collectionShortfalls(l, f)) out.push({ level: 'warn', msg: w });
   for (const e of l.units) if (!f.unitById.get(e.unitId)) out.push({ level: 'warn', msg: `${e.name} is no longer in the data (kept at ${e.lastPts || 0} pts).` });
   return out;
 }
@@ -408,11 +413,37 @@ function closeAllSheets() {
   sheets.length = 0;
   renderSheets();
 }
+// ---- collection: models owned per datasheet (keyed by name, so a unit counts in every army it appears in)
+const ckey = (name) => String(name || '').toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, ' ').trim();
+const owned = (u) => S.collection[ckey(u.n)]?.n || 0;
+const hasCollection = () => Object.values(S.collection).some((x) => x.n > 0);
+function modelsUsed(l, f) {
+  const used = new Map();
+  for (const e of l.units) {
+    const u = f.unitById.get(e.unitId);
+    if (!u) continue;
+    used.set(ckey(u.n), (used.get(ckey(u.n)) || 0) + entryModels(e, u, l));
+  }
+  return used;
+}
+function collectionShortfalls(l, f) {
+  if (!hasCollection()) return [];
+  const out = [];
+  for (const [k, n] of modelsUsed(l, f)) {
+    const have = S.collection[k]?.n || 0;
+    if (n > have) {
+      const name = l.units.find((e) => ckey(f.unitById.get(e.unitId)?.n) === k)?.name || k;
+      out.push(have ? `${name}: list uses ${n} models, you own ${have}.` : `${name}: not in your collection.`);
+    }
+  }
+  return out;
+}
+
 // ---- phone Back button: mirror the app's screens in browser history ----
 // depth = open sheets + an open list + being on a tab other than Army
 let histDepth = 0;
 let ignorePops = 0;
-const navDepth = () => sheets.length + (S.tab === 'army' && S.openListId ? 1 : 0) + (S.tab !== 'army' ? 1 : 0);
+const navDepth = () => sheets.length + (S.tab === 'army' && (S.openListId || S.collView) ? 1 : 0) + (S.tab !== 'army' ? 1 : 0);
 function syncHistory() {
   const d = navDepth();
   if (d > histDepth) {
@@ -434,6 +465,9 @@ window.addEventListener('popstate', () => {
     const top = sheets[sheets.length - 1];
     if (top.opts.onBack) top.opts.onBack();
     else closeSheet();
+  } else if (S.tab === 'army' && S.collView) {
+    S.collView = null;
+    render();
   } else if (S.tab === 'army' && S.openListId) {
     S.openListId = null;
     S.reorder = false;
@@ -492,7 +526,7 @@ function render() {
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
   const y = window.scrollY;
   const v = $('#view');
-  if (S.tab === 'army') v.innerHTML = S.openListId ? viewList() : viewLists();
+  if (S.tab === 'army') v.innerHTML = S.collView ? viewCollection() : S.openListId ? viewList() : viewLists();
   else if (S.tab === 'battle') v.innerHTML = viewBattle();
   else v.innerHTML = viewStrats();
   window.scrollTo(0, keepScroll ? y : 0);
@@ -534,6 +568,7 @@ function viewLists() {
     .join('');
   return `<header class="top"><div class="brand"><span class="logo">◈</span> Muster</div><div class="grow"></div>${gear}</header>
   <main class="pad">${installBanner()}
+    <button class="card coll-card" data-act="openCollection"><span class="coll-ico">📦</span><span class="grow"><b>My collection</b><br><span class="muted small">${hasCollection() ? `${Object.values(S.collection).reduce((t, x) => t + (x.n || 0), 0)} models across ${Object.values(S.collection).filter((x) => x.n > 0).length} datasheets` : 'Note the models you own, then build lists from them'}</span></span><span class="muted">›</span></button>
     <div class="row gap"><button class="btn primary grow" data-act="newList">＋ New army list</button><button class="btn ghost" data-act="importList">Import</button></div>
     ${cards ? `<div class="stack">${cards}</div>` : `<div class="empty"><div class="empty-ico">⚔</div><p>No army lists yet.</p><p class="muted">Pick a faction to start. Its datasheets, points, detachments and stratagems download to this phone so they work offline.</p></div>`}
   </main>`;
@@ -581,6 +616,62 @@ async function createList() {
   await save('lists');
   closeAllSheets();
   S.openListId = l.id;
+  render();
+}
+
+// ---------------------------------------------------------------- Army: collection
+function viewCollection() {
+  const cv = S.collView;
+  const f = factions.get(cv.factionId);
+  const idx = S.index;
+  let body = '';
+  if (!cv.factionId) body = '<p class="muted center">Choose a faction to record your models.</p>';
+  else if (!f) body = '<div class="loading">Loading…</div>';
+  else {
+    const q = (cv.q || '').toLowerCase();
+    const groups = new Map();
+    for (const u of f.units) {
+      if (u.legends && !S.settings.showLegends) continue;
+      if (q && !u.n.toLowerCase().includes(q)) continue;
+      const g = u.legends ? 'Legends' : u.xg ? u.xg : roleGroup(u);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(u);
+    }
+    const order = [...groups.keys()].sort((a, b) => (a === 'Legends') - (b === 'Legends') || (!!f.units.find((u) => u.xg === a)) - (!!f.units.find((u) => u.xg === b)) || roleRank(a) - roleRank(b));
+    const tot = f.units.reduce((t, u) => t + owned(u), 0);
+    body = `<p class="muted small">${tot} models recorded for ${esc(f.n)}. Units in several armies (e.g. Astra Militarum in Genestealer Cults) share one count.</p>
+      ${order
+        .map((g) => {
+          const us = groups.get(g).sort((a, b) => a.n.localeCompare(b.n));
+          const have = us.reduce((t, u) => t + owned(u), 0);
+          const open = q || cv.open[g];
+          return `<div class="fold ${open ? 'open' : ''}"><button class="fold-h" data-act="collFold" data-k="${esc(g)}"><span>${esc(g)}</span><span class="muted">${have ? `<span class="own">${have} owned</span> · ` : ''}${us.length} ${open ? '▾' : '▸'}</span></button>
+          ${open ? `<div class="fold-b">${us
+            .map((u) => {
+              const c = S.collection[ckey(u.n)] || {};
+              const sizes = u.c.map((x) => x.models).filter(Boolean);
+              return `<div class="coll-row"><div class="grow"><div class="pn">${esc(u.n)}</div><div class="ps muted">${sizes.length ? `units of ${[...new Set(sizes)].join('/')}` : esc(u.c[0]?.d || '')}${c.note ? ` · <span class="note">${esc(c.note)}</span>` : ''}</div></div>
+                <button class="icon small" data-act="collNote" data-k="${esc(u.n)}" aria-label="Note">✎</button>
+                <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="-1" ${c.n ? '' : 'disabled'}>−</button>
+                <input class="st-v coll-n" inputmode="numeric" data-bind="collN" data-k="${esc(u.n)}" value="${c.n || 0}">
+                <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="1">+</button></div>`;
+            })
+            .join('')}</div>` : ''}</div>`;
+        })
+        .join('')}`;
+  }
+  return `<header class="top"><button class="icon back" data-act="closeCollection" aria-label="Back">‹</button><div class="top-title"><div class="tt-name">My collection</div><div class="tt-sub">Models you own</div></div></header>
+  <main class="pad">
+    <select data-bind="collFaction"><option value="">Choose faction…</option>${(idx?.factions || []).map((x) => `<option value="${x.id}" ${x.id === cv.factionId ? 'selected' : ''}>${esc(x.n)}</option>`).join('')}</select>
+    ${f ? `<input id="collQ" type="search" placeholder="Search datasheets…" value="${esc(cv.q || '')}" autocomplete="off"><label class="toggle small"><input type="checkbox" data-act="toggleLegends" ${S.settings.showLegends ? 'checked' : ''}><span>Show Legends units</span></label>` : ''}
+    <div id="collBody" class="mt">${body}</div>
+  </main>`;
+}
+async function openCollection() {
+  await ensureIndex().catch(() => null);
+  const guess = S.lists[0]?.factionId || S.cached[0] || '';
+  S.collView = { factionId: guess, q: '', open: {} };
+  if (guess) await ensureFaction(guess).catch(() => null);
   render();
 }
 
@@ -755,6 +846,7 @@ function pickerSections(f, l) {
   const locked = new Map();
   for (const u of f.units) {
     if (!match(u)) continue;
+    if (S.pickOwned && !owned(u)) continue;
     if (u.legends) {
       if (S.settings.showLegends) legends.push(u);
       continue;
@@ -784,7 +876,8 @@ function addUnitSheet() {
       const l = curList();
       const f = factions.get(l.factionId);
       return `${head('Add unit')}<div class="sheet-sub"><input id="pickQ" type="search" placeholder="Search datasheets…" value="${esc(picker.q)}" autocomplete="off">
-        <label class="toggle small"><input type="checkbox" data-act="toggleLegends" ${S.settings.showLegends ? 'checked' : ''}><span>Show Legends units</span></label></div>
+        <div class="row gap wrap"><label class="toggle small"><input type="checkbox" data-act="toggleLegends" ${S.settings.showLegends ? 'checked' : ''}><span>Show Legends</span></label>
+        ${hasCollection() ? `<label class="toggle small"><input type="checkbox" data-act="togglePickOwned" ${S.pickOwned ? 'checked' : ''}><span>Only my collection</span></label>` : ''}</div></div>
         <div class="sheet-body" id="pickResults">${pickerResults(f, l)}</div>`;
     },
     { tall: true }
@@ -795,10 +888,14 @@ function pickerResults(f, l) {
   const counts = new Map();
   for (const e of l.units) counts.set(e.unitId, (counts.get(e.unitId) || 0) + 1);
   const searching = !!picker.q;
+  const used = modelsUsed(l, f);
   const row = (u) => {
     const pts = u.c.length ? (u.c.length > 1 ? `${u.c[0].pts}–${u.c[u.c.length - 1].pts}` : u.c[0].pts) : '?';
     const n = counts.get(u.id) || 0;
-    return `<div class="pick-row"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}</div>
+    const have = owned(u);
+    const usedM = used.get(ckey(u.n)) || 0;
+    const ownTag = hasCollection() ? (have ? ` <span class="tag ${usedM >= have ? 'used' : 'own'}">${usedM ? `${usedM}/${have}` : have} owned</span>` : '') : '';
+    return `<div class="pick-row ${hasCollection() && have && usedM >= have ? 'spent' : ''}"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}${ownTag}</div>
       <div class="ps muted">${u.c.length > 1 ? esc(u.c.map((c) => c.d).join(' / ')) : esc(u.c[0]?.d || '')}</div></button>
       <div class="pp">${pts}</div><button class="addbtn" data-act="pickAdd" data-id="${u.id}" aria-label="Add ${esc(u.n)}">＋</button></div>`;
   };
@@ -1509,7 +1606,7 @@ async function updateData() {
 }
 
 async function exportBackup() {
-  const blob = new Blob([JSON.stringify({ app: 'muster', v: 2, exported: new Date().toISOString(), lists: S.lists, games: S.games, settings: S.settings }, null, 1)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ app: 'muster', v: 2, exported: new Date().toISOString(), lists: S.lists, games: S.games, settings: S.settings, collection: S.collection }, null, 1)], { type: 'application/json' });
   const name = `muster-backup-${new Date().toISOString().slice(0, 10)}.json`;
   try {
     const file = new File([blob], name, { type: 'application/json' });
@@ -1534,6 +1631,7 @@ async function importBackup(file) {
     };
     S.lists = merge(S.lists, d.lists);
     S.games = merge(S.games, d.games);
+    if (d.collection) S.collection = { ...S.collection, ...d.collection };
     await save();
     toast('Backup imported');
     rerender();
@@ -1728,6 +1826,7 @@ const A = {
   toggleLegends: (el) => {
     S.settings.showLegends = el.checked;
     save('settings');
+    if (S.collView && !sheets.length) return rerender();
     const l = curList();
     $('#pickResults').innerHTML = pickerResults(factions.get(l.factionId), l);
   },
@@ -1792,6 +1891,37 @@ const A = {
     rerenderTopSheet();
   },
   wkw: (el) => showWeaponKeyword(el.dataset.k),
+  openCollection: () => openCollection(),
+  closeCollection: () => {
+    S.collView = null;
+    render();
+  },
+  collFold: (el) => {
+    S.collView.open[el.dataset.k] = !S.collView.open[el.dataset.k];
+    rerender();
+  },
+  collStep: (el) => {
+    const k = ckey(el.dataset.k);
+    const c = (S.collection[k] ||= { n: 0, note: '' });
+    c.n = Math.max(0, (c.n || 0) + +el.dataset.d);
+    save('collection');
+    rerender();
+  },
+  collNote: async (el) => {
+    const k = ckey(el.dataset.k);
+    const c = (S.collection[k] ||= { n: 0, note: '' });
+    const v = await promptBox(`${el.dataset.k} — note`, c.note || '', { placeholder: 'e.g. magnetised: lascannon / multi-melta', ok: 'Save' });
+    if (v != null) {
+      c.note = v.trim();
+      save('collection');
+      rerender();
+    }
+  },
+  togglePickOwned: (el) => {
+    S.pickOwned = el.checked;
+    const l = curList();
+    $('#pickResults').innerHTML = pickerResults(factions.get(l.factionId), l);
+  },
   toggleReorder: () => {
     S.reorder = !S.reorder;
     rerender();
@@ -2166,6 +2296,24 @@ document.addEventListener('change', async (e) => {
     const l = S.lists.find((x) => x.id === el.value);
     if (l && l.disposition && $('#ngFd0')) $('#ngFd0').value = l.disposition;
   }
+  if (b === 'collN') {
+    const c = (S.collection[ckey(el.dataset.k)] ||= { n: 0, note: '' });
+    c.n = Math.max(0, parseInt(el.value, 10) || 0);
+    save('collection');
+    rerender();
+  }
+  if (b === 'collFaction') {
+    S.collView = { factionId: el.value, q: '', open: {} };
+    render();
+    if (el.value) {
+      try {
+        await ensureFaction(el.value);
+      } catch (err) {
+        toast(err.message);
+      }
+      rerender();
+    }
+  }
   if (b === 'stList') {
     S.strat.listId = el.value;
     save('settings');
@@ -2192,6 +2340,17 @@ document.addEventListener('input', (e) => {
     picker.q = el.value;
     const l = curList();
     $('#pickResults').innerHTML = pickerResults(factions.get(l.factionId), l);
+    return;
+  }
+  if (el.id === 'collQ') {
+    S.collView.q = el.value;
+    const pos = el.selectionStart;
+    rerender();
+    const n = $('#collQ');
+    if (n) {
+      n.focus();
+      n.setSelectionRange(pos, pos);
+    }
     return;
   }
   if (el.id === 'stQ') {
@@ -2221,7 +2380,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
 
 // ================================================================= boot
 async function boot() {
-  const [lists, games, settings, idx, core] = await Promise.all([store.get('kv', 'lists'), store.get('kv', 'games'), store.get('kv', 'settings'), data.cachedIndex(), data.cachedCore()]);
+  const [lists, games, settings, idx, core, coll] = await Promise.all([store.get('kv', 'lists'), store.get('kv', 'games'), store.get('kv', 'settings'), data.cachedIndex(), data.cachedCore(), store.get('kv', 'collection')]);
+  S.collection = coll || {};
   // lists from the old 10th edition version can't be read by this one
   S.lists = (lists || []).filter((l) => l.factionId);
   S.games = games || [];

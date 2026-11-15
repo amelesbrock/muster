@@ -396,3 +396,15 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .inv-sh sup { position: absolute; top: -2px; right: 2px; font-size: 11px; }
 .inv-l { line-height: 1.25; font-weight: 650; }
 .inv-notes { margin: 2px 0 6px; }
+
+/* collection */
+.coll-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; margin-bottom: 12px; text-align: left; }
+.coll-ico { font-size: 26px; }
+.coll-row { display: flex; align-items: center; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.coll-row:last-child { border-bottom: 0; }
+.coll-n { width: 46px; flex: none; height: 32px; padding: 4px; font-size: 16px; }
+.note { color: var(--accent); }
+.tag.own { color: var(--green); border-color: rgba(116,194,122,.45); }
+.tag.used { color: var(--amber); border-color: rgba(226,168,66,.45); }
+.own { color: var(--green); }
+.pick-row.spent .pn { opacity: .7; }
