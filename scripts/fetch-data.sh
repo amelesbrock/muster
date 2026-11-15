@@ -26,3 +26,5 @@ done
 printf '},"fetched":"%s","source":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BASE" >> "$OUT/manifest.json.tmp"
 mv "$OUT/manifest.json.tmp" "$OUT/manifest.json"
 cat "$OUT/manifest.json"
+# Mission deck page (missions aren't in the CSV export)
+curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 -A "$UA" "$BASE/the-rules/mission-deck-2026-27" -o "$OUT/mission-deck.html" && echo "ok   mission-deck.html" || echo "miss mission-deck.html"

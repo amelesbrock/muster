@@ -29,6 +29,20 @@ jobs:
         run: bash scripts/fetch-data.sh
       - name: Compile data for the app
         run: python3 scripts/compile.py
+      - name: Dev sample (temporary)
+        run: |
+          python3 - <<'PY'
+          import re, collections
+          h = open('site/data/mission-deck.html', encoding='utf-8').read()
+          print('LEN', len(h))
+          print('CLASSES', collections.Counter(re.findall(r'class="([^"]+)"', h)).most_common(60))
+          for name in ['Battlefield Dominance', 'Vital Link', 'Assassination', 'Tipping Point', 'Night Fighting', 'Take and Hold']:
+              for m in list(re.finditer(re.escape(name), h))[:3]:
+                  print('SNIP', name, '::', h[max(0, m.start()-700):m.start()+900].replace('\n', ' '))
+          for sc in re.findall(r'<script[^>]*>(.*?)</script>', h, re.S):
+              if 'Dominance' in sc or 'Disposition' in sc or 'generator' in sc.lower():
+                  print('SCRIPT', len(sc), sc[:3500].replace('\n', ' '))
+          PY
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)
