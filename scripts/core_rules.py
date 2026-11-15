@@ -32,6 +32,7 @@ def main():
         if not name.startswith('['):
             continue  # unit abilities are already in the CSV export
         body = re.sub(r'^.*?class="abNameWrap">.*?</div></div>', '', chunk, count=1, flags=re.S)
+        body = re.sub(r'<script.*?</script>', '', body, flags=re.S)
         k = key(name)
         if k not in out or len(body) > len(out[k]['d']):
             out[k] = {'n': name, 'd': body}
@@ -42,9 +43,6 @@ def main():
         json.dump(core, fh, ensure_ascii=False, separators=(',', ':'))
     os.remove(SRC)
     print('weapon abilities:', len(out), sorted(out))
-    for k, v in out.items():
-        t = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', v['d'])).strip()
-        print('WA', k, len(t), '|', t[:110], '…', t[-90:])
 
 
 if __name__ == '__main__':
