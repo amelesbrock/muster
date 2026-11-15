@@ -413,3 +413,4 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .rule ul { margin: 4px 0; padding-left: 20px; }
 .rule li { margin: 2px 0; }
 .kwd, .rule .kwd, .st-body .kwd { font-variant: normal; text-transform: uppercase; font-size: .86em; font-weight: 750; letter-spacing: .03em; }
+.chip.short { border-color: rgba(226,168,66,.6); color: var(--amber); }

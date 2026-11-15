@@ -415,28 +415,53 @@ function closeAllSheets() {
   sheets.length = 0;
   renderSheets();
 }
-// ---- collection: models owned per datasheet (keyed by name, so a unit counts in every army it appears in)
+// ---- collection: boxes owned per datasheet, each box being the datasheet's smallest unit size
+// (keyed by name, so a unit counts in every army it appears in). Boxes combine into bigger units:
+// two boxes of 5 Acolytes make one unit of 10.
 const ckey = (name) => String(name || '').toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, ' ').trim();
-const owned = (u) => S.collection[ckey(u.n)]?.n || 0;
-const hasCollection = () => Object.values(S.collection).some((x) => x.n > 0);
-function modelsUsed(l, f) {
+function blockSize(u) {
+  const sizes = u.c.map((x) => x.models).filter(Boolean);
+  return sizes.length ? Math.min(...sizes) : 1;
+}
+function blocksOwned(u) {
+  const c = S.collection[ckey(u.n)];
+  if (!c) return 0;
+  if (c.b == null && c.n) c.b = Math.ceil(c.n / blockSize(u)); // older saves counted models
+  return c.b || 0;
+}
+const owned = (u) => blocksOwned(u) * blockSize(u);
+const hasCollection = () => Object.values(S.collection).some((x) => (x.b ?? x.n) > 0);
+const blocksFor = (u, models) => Math.ceil(models / blockSize(u));
+// boxes still available for this entry (owned minus those used by other entries)
+function freeBlocks(u, e, l, f) {
+  let usedElsewhere = 0;
+  for (const x of l.units) {
+    if (x.uid === e.uid) continue;
+    const ux = f.unitById.get(x.unitId);
+    if (ux && ckey(ux.n) === ckey(u.n)) usedElsewhere += blocksFor(ux, entryModels(x, ux, l));
+  }
+  return Math.max(0, blocksOwned(u) - usedElsewhere);
+}
+// boxes each datasheet uses in a list
+function blocksUsed(l, f) {
   const used = new Map();
   for (const e of l.units) {
     const u = f.unitById.get(e.unitId);
     if (!u) continue;
-    used.set(ckey(u.n), (used.get(ckey(u.n)) || 0) + entryModels(e, u, l));
+    used.set(ckey(u.n), (used.get(ckey(u.n)) || 0) + blocksFor(u, entryModels(e, u, l)));
   }
   return used;
 }
 function collectionShortfalls(l, f) {
   if (!hasCollection()) return [];
   const out = [];
-  for (const [k, n] of modelsUsed(l, f)) {
-    const have = S.collection[k]?.n || 0;
-    if (n > have) {
-      const name = l.units.find((e) => ckey(f.unitById.get(e.unitId)?.n) === k)?.name || k;
-      out.push(have ? `${name}: list uses ${n} models, you own ${have}.` : `${name}: not in your collection.`);
-    }
+  for (const [k, n] of blocksUsed(l, f)) {
+    const e = l.units.find((x) => ckey(f.unitById.get(x.unitId)?.n) === k);
+    const u = e && f.unitById.get(e.unitId);
+    if (!u) continue;
+    const have = blocksOwned(u);
+    const bs = blockSize(u);
+    if (n > have) out.push(have ? `${u.n}: list needs ${n}×${bs}, you own ${have}×${bs}.` : `${u.n}: not in your collection.`);
   }
   return out;
 }
@@ -570,7 +595,7 @@ function viewLists() {
     .join('');
   return `<header class="top"><div class="brand"><span class="logo">◈</span> Muster</div><div class="grow"></div>${gear}</header>
   <main class="pad">${installBanner()}
-    <button class="card coll-card" data-act="openCollection"><span class="coll-ico">📦</span><span class="grow"><b>My collection</b><br><span class="muted small">${hasCollection() ? `${Object.values(S.collection).reduce((t, x) => t + (x.n || 0), 0)} models across ${Object.values(S.collection).filter((x) => x.n > 0).length} datasheets` : 'Note the models you own, then build lists from them'}</span></span><span class="muted">›</span></button>
+    <button class="card coll-card" data-act="openCollection"><span class="coll-ico">📦</span><span class="grow"><b>My collection</b><br><span class="muted small">${hasCollection() ? `${Object.values(S.collection).reduce((t, x) => t + ((x.b ?? x.n) || 0), 0)} units across ${Object.values(S.collection).filter((x) => (x.b ?? x.n) > 0).length} datasheets` : 'Note the models you own, then build lists from them'}</span></span><span class="muted">›</span></button>
     <div class="row gap"><button class="btn primary grow" data-act="newList">＋ New army list</button><button class="btn ghost" data-act="importList">Import</button></div>
     ${cards ? `<div class="stack">${cards}</div>` : `<div class="empty"><div class="empty-ico">⚔</div><p>No army lists yet.</p><p class="muted">Pick a faction to start. Its datasheets, points, detachments and stratagems download to this phone so they work offline.</p></div>`}
   </main>`;
@@ -640,29 +665,30 @@ function viewCollection() {
       groups.get(g).push(u);
     }
     const order = [...groups.keys()].sort((a, b) => (a === 'Legends') - (b === 'Legends') || (!!f.units.find((u) => u.xg === a)) - (!!f.units.find((u) => u.xg === b)) || roleRank(a) - roleRank(b));
-    const tot = f.units.reduce((t, u) => t + owned(u), 0);
-    body = `<p class="muted small">${tot} models recorded for ${esc(f.n)}. Units in several armies (e.g. Astra Militarum in Genestealer Cults) share one count.</p>
+    const tot = f.units.reduce((t, u) => t + blocksOwned(u), 0);
+    body = `<p class="muted small">${tot} unit${tot === 1 ? '' : 's'} recorded for ${esc(f.n)}. Count each unit in its smallest size — bigger units are built by combining them. Units in several armies (e.g. Astra Militarum in Genestealer Cults) share one count.</p>
       ${order
         .map((g) => {
           const us = groups.get(g).sort((a, b) => a.n.localeCompare(b.n));
-          const have = us.reduce((t, u) => t + owned(u), 0);
+          const have = us.reduce((t, u) => t + blocksOwned(u), 0);
           const open = q || cv.open[g];
-          return `<div class="fold ${open ? 'open' : ''}"><button class="fold-h" data-act="collFold" data-k="${esc(g)}"><span>${esc(g)}</span><span class="muted">${have ? `<span class="own">${have} owned</span> · ` : ''}${us.length} ${open ? '▾' : '▸'}</span></button>
+          return `<div class="fold ${open ? 'open' : ''}"><button class="fold-h" data-act="collFold" data-k="${esc(g)}"><span>${esc(g)}</span><span class="muted">${have ? `<span class="own">${have} unit${have === 1 ? '' : 's'}</span> · ` : ''}${us.length} ${open ? '▾' : '▸'}</span></button>
           ${open ? `<div class="fold-b">${us
             .map((u) => {
               const c = S.collection[ckey(u.n)] || {};
-              const sizes = u.c.map((x) => x.models).filter(Boolean);
-              return `<div class="coll-row"><div class="grow"><div class="pn">${esc(u.n)}</div><div class="ps muted">${sizes.length ? `units of ${[...new Set(sizes)].join('/')}` : esc(u.c[0]?.d || '')}${c.note ? ` · <span class="note">${esc(c.note)}</span>` : ''}</div></div>
+              const bs = blockSize(u);
+              const b = blocksOwned(u);
+              return `<div class="coll-row"><div class="grow"><div class="pn">${esc(u.n)}</div><div class="ps muted">${b ? `<span class="own">${b} × ${bs} = ${b * bs} model${b * bs === 1 ? '' : 's'}</span>` : `unit of ${bs}`}${c.note ? ` · <span class="note">${esc(c.note)}</span>` : ''}</div></div>
                 <button class="icon small" data-act="collNote" data-k="${esc(u.n)}" aria-label="Note">✎</button>
-                <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="-1" ${c.n ? '' : 'disabled'}>−</button>
-                <input class="st-v coll-n" inputmode="numeric" data-bind="collN" data-k="${esc(u.n)}" value="${c.n || 0}">
+                <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="-1" ${b ? '' : 'disabled'}>−</button>
+                <input class="st-v coll-n" inputmode="numeric" data-bind="collN" data-k="${esc(u.n)}" value="${b}">
                 <button class="st-b sm" data-act="collStep" data-k="${esc(u.n)}" data-d="1">+</button></div>`;
             })
             .join('')}</div>` : ''}</div>`;
         })
         .join('')}`;
   }
-  return `<header class="top"><button class="icon back" data-act="closeCollection" aria-label="Back">‹</button><div class="top-title"><div class="tt-name">My collection</div><div class="tt-sub">Models you own</div></div></header>
+  return `<header class="top"><button class="icon back" data-act="closeCollection" aria-label="Back">‹</button><div class="top-title"><div class="tt-name">My collection</div><div class="tt-sub">Units you own, in their smallest size</div></div></header>
   <main class="pad">
     <select data-bind="collFaction"><option value="">Choose faction…</option>${(idx?.factions || []).map((x) => `<option value="${x.id}" ${x.id === cv.factionId ? 'selected' : ''}>${esc(x.n)}</option>`).join('')}</select>
     ${f ? `<input id="collQ" type="search" placeholder="Search datasheets…" value="${esc(cv.q || '')}" autocomplete="off"><label class="toggle small"><input type="checkbox" data-act="toggleLegends" ${S.settings.showLegends ? 'checked' : ''}><span>Show Legends units</span></label>` : ''}
@@ -890,14 +916,15 @@ function pickerResults(f, l) {
   const counts = new Map();
   for (const e of l.units) counts.set(e.unitId, (counts.get(e.unitId) || 0) + 1);
   const searching = !!picker.q;
-  const used = modelsUsed(l, f);
+  const used = blocksUsed(l, f);
   const row = (u) => {
     const pts = u.c.length ? (u.c.length > 1 ? `${u.c[0].pts}–${u.c[u.c.length - 1].pts}` : u.c[0].pts) : '?';
     const n = counts.get(u.id) || 0;
-    const have = owned(u);
-    const usedM = used.get(ckey(u.n)) || 0;
-    const ownTag = hasCollection() ? (have ? ` <span class="tag ${usedM >= have ? 'used' : 'own'}">${usedM ? `${usedM}/${have}` : have} owned</span>` : '') : '';
-    return `<div class="pick-row ${hasCollection() && have && usedM >= have ? 'spent' : ''}"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}${ownTag}</div>
+    const have = blocksOwned(u);
+    const usedB = used.get(ckey(u.n)) || 0;
+    const bs = blockSize(u);
+    const ownTag = hasCollection() && have ? ` <span class="tag ${usedB >= have ? 'used' : 'own'}">${usedB ? `${usedB}/${have}` : have}×${bs} owned</span>` : '';
+    return `<div class="pick-row ${hasCollection() && have && usedB >= have ? 'spent' : ''}"><button class="pick-info" data-act="viewUnit" data-add="1" data-id="${u.id}"><div class="pn">${esc(u.n)}${n ? ` <span class="tag">×${n}</span>` : ''}${ownTag}</div>
       <div class="ps muted">${u.c.length > 1 ? esc(u.c.map((c) => c.d).join(' / ')) : esc(u.c[0]?.d || '')}</div></button>
       <div class="pp">${pts}</div><button class="addbtn" data-act="pickAdd" data-id="${u.id}" aria-label="Add ${esc(u.n)}">＋</button></div>`;
   };
@@ -962,7 +989,11 @@ function editEntry(entryUid) {
         if (u.sup && sup) return `<span class="warn small">has ${esc(sup.name)}</span>`;
         return `<span class="muted small">${entryPts(h, f, l)} pts</span>`;
       };
-      const optionsPart = `        ${u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => `<button class="chip ${(e.cost || 0) === i ? 'on' : ''}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}</button>`).join('')}</div>` : ''}
+      const optionsPart = `        ${u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => {
+          const need = c.models ? blocksFor(u, c.models) : 0;
+          const tight = hasCollection() && need && need > freeBlocks(u, e, l, f) ? 'short' : '';
+          return `<button class="chip ${(e.cost || 0) === i ? 'on' : ''} ${tight}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}${hasCollection() && need > 1 ? ` <span class="small">(${need}×${blockSize(u)})</span>` : ''}</button>`;
+        }).join('')}</div>${hasCollection() ? `<p class="muted small">You own ${blocksOwned(u)} × ${blockSize(u)}; ${freeBlocks(u, e, l, f)} free for this unit.</p>` : ''}<div></div>` : ''}
         ${u.cx && u.cx.some((b) => !/wargear/i.test(b.label)) ? u.cx.map((b, bi) => (/wargear/i.test(b.label) ? '' : `<label class="lbl">${esc(b.label || 'Options')}</label><div class="chips">${b.rows.map((r, ri) => `<button class="chip ${(e.ex || []).includes(bi + ':' + ri) ? 'on' : ''}" data-act="toggleEx" data-uid="${e.uid}" data-v="${bi}:${ri}">${esc(r.d)} · +${r.pts}</button>`).join('')}</div>`)).join('') : ''}
         ${u.character ? `<label class="toggle"><input type="checkbox" data-act="setWarlord" data-uid="${e.uid}" ${e.warlord ? 'checked' : ''}><span>Warlord</span></label>` : ''}
         ${u.leads.length ? `<label class="lbl">${u.sup ? 'Support — joins a unit even if it has a Leader' : 'Leading'}</label>
@@ -1904,14 +1935,15 @@ const A = {
   },
   collStep: (el) => {
     const k = ckey(el.dataset.k);
-    const c = (S.collection[k] ||= { n: 0, note: '' });
-    c.n = Math.max(0, (c.n || 0) + +el.dataset.d);
+    const c = (S.collection[k] ||= { b: 0, note: '' });
+    c.b = Math.max(0, (c.b ?? 0) + +el.dataset.d);
+    delete c.n;
     save('collection');
     rerender();
   },
   collNote: async (el) => {
     const k = ckey(el.dataset.k);
-    const c = (S.collection[k] ||= { n: 0, note: '' });
+    const c = (S.collection[k] ||= { b: 0, note: '' });
     const v = await promptBox(`${el.dataset.k} — note`, c.note || '', { placeholder: 'e.g. magnetised: lascannon / multi-melta', ok: 'Save' });
     if (v != null) {
       c.note = v.trim();
@@ -2299,8 +2331,9 @@ document.addEventListener('change', async (e) => {
     if (l && l.disposition && $('#ngFd0')) $('#ngFd0').value = l.disposition;
   }
   if (b === 'collN') {
-    const c = (S.collection[ckey(el.dataset.k)] ||= { n: 0, note: '' });
-    c.n = Math.max(0, parseInt(el.value, 10) || 0);
+    const c = (S.collection[ckey(el.dataset.k)] ||= { b: 0, note: '' });
+    c.b = Math.max(0, parseInt(el.value, 10) || 0);
+    delete c.n;
     save('collection');
     rerender();
   }
