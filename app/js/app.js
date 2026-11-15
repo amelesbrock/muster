@@ -880,7 +880,7 @@ function editEntry(entryUid) {
         <div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { build: true })}</div>`;
       const ws = wargearSummary(e, u, l);
       const en = e.enh && f.enhById.get(e.enh);
-      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true })}</div>`;
+      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true, attached: l.units.filter((x) => x.attachTo === e.uid).map((x) => f.unitById.get(x.unitId)).filter(Boolean) })}</div>`;
       return `${head(e.name)}<div class="sheet-body">
         <div class="row"><div class="big-pts grow">${entryPts(e, f, l)} <span>pts</span></div>${e.warlord ? '<span class="tag big">♛ Warlord</span>' : ''}</div>
         ${co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
@@ -918,6 +918,46 @@ function wargearHtml(e, u, wg, models) {
       </div>`;
     })
     .join('')}`;
+}
+
+// Invulnerable saves: the unit's own (solid shield) and ones that depend on something —
+// wargear, an ability's condition, or an attached character (dashed shield with ★)
+const INV_RE = /(?:(\d)\+\s*invulnerable save|invulnerable save of (\d)\+)/i;
+function abilityInvs(u, f, from) {
+  const out = [];
+  for (const a of u.ab) {
+    if (a.t === 'Core') continue;
+    const r = a.ref ? f.abilities[a.ref] : a;
+    const txt = plain(r?.d || a.d || '');
+    const m = INV_RE.exec(txt);
+    if (!m) continue;
+    // a leader's ability only matters for the unit if it talks about the unit it leads
+    if (from && !/leading|that unit|this unit|bearer.?s unit|models in/i.test(txt)) continue;
+    out.push({ v: (m[1] || m[2]) + '+', cond: true, src: from ? `${from} (${r?.n || a.n})` : r?.n || a.n, note: txt });
+  }
+  return out;
+}
+function invStrip(u, f, attached) {
+  const list = [];
+  for (const m of u.m) {
+    if (!m.inv) continue;
+    const cond = !!plain(m.invd).trim();
+    list.push({ v: m.inv, cond, src: u.m.length > 1 ? m.n : '', note: plain(m.invd) });
+  }
+  for (const x of abilityInvs(u, f)) if (!list.some((y) => y.v === x.v && !y.cond)) list.push(x);
+  for (const lu of attached) for (const x of abilityInvs(lu, f, lu.n)) list.push(x);
+  if (!list.length) return '';
+  const seen = new Set();
+  const uniq = list.filter((x) => {
+    const k = x.v + '|' + x.src;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return `<div class="inv-strip">${uniq
+    .map((x) => `<div class="invb ${x.cond ? 'cond' : ''}"><span class="inv-sh">${esc(x.v)}${x.cond ? '<sup>★</sup>' : ''}</span><span class="inv-l">Invulnerable save${x.src ? `<br><span class="muted">${x.cond ? 'from ' : ''}${esc(x.src)}</span>` : ''}</span></div>`)
+    .join('')}</div>
+  ${uniq.some((x) => x.cond) ? `<details class="inv-notes"><summary class="muted small">★ Conditional — tap for details</summary>${uniq.filter((x) => x.cond).map((x) => `<p class="small"><b>${esc(x.v)} ${esc(x.src || '')}:</b> ${esc(x.note)}</p>`).join('')}</details>` : ''}`;
 }
 
 // Weapon keyword → rule text (from the core rules, compiled into core.json)
@@ -988,7 +1028,7 @@ function datasheet(u, f, counts, opts = {}) {
   return `<div class="ds-kw">${u.kw.map((k) => `<span class="kwchip">${esc(k)}</span>`).join('')}</div>
   <table class="stats"><thead><tr><th></th><th>M</th><th>T</th><th>SV</th><th>W</th><th>LD</th><th>OC</th></tr></thead><tbody>
   ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => `<td>${esc(m[k] || '-')}</td>`).join('')}</tr>`).join('')}</tbody></table>
-  ${u.m.filter((m) => m.inv).map((m) => `<div class="inv">🛡 Invulnerable save <b>${esc(m.inv)}</b>${u.m.length > 1 ? ` (${esc(m.n)})` : ''}${m.invd ? ` — ${rich(m.invd)}` : ''}</div>`).join('')}
+  ${invStrip(u, f, opts.attached || [])}
   ${wt('ranged')}${wt('melee')}
   ${ab('Core').length ? `<h3 class="ds-h core">Core</h3><div class="rulechips">${chipList(ab('Core'))}</div>` : ''}
   ${ab('Faction').length ? `<h3 class="ds-h fac">Faction</h3><div class="rulechips">${chipList(ab('Faction'))}</div>` : ''}
