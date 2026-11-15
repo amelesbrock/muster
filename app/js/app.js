@@ -947,7 +947,7 @@ async function showWeaponKeyword(t) {
   }
   // actions the rule points to, e.g. [INDIRECT FIRE] → "indirect shooting", [ASSAULT] → "assault shooting"
   const acts = S.core?.actions || {};
-  const txt = hit ? plain(hit.d).toLowerCase() : '';
+  const txt = hit ? plain([hit.d, ...extra.map((k2) => all[k2].d)].join(' ')).toLowerCase() : '';
   const actHits = Object.keys(acts).filter((a) => a.length > 4 && txt.includes(a.toLowerCase()));
   showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>${extra.map((k2) => `<h3 class="ds-h abil">${esc(all[k2].n)} — applies to this weapon</h3><div class="rule">${rich(all[k2].d)}</div>`).join('')}${actHits.map((a) => `<h3 class="ds-h ranged">${esc(a)}</h3><div class="rule">${rich(acts[a])}</div>`).join('')}` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
 }
