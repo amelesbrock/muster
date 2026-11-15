@@ -881,6 +881,25 @@ function wargearHtml(e, u, wg, models) {
     .join('')}`;
 }
 
+// Weapon keyword → rule text (from the core rules, compiled into core.json)
+function weaponAbilityKey(t) {
+  return t
+    .replace(/[\[\]]/g, '')
+    .toUpperCase()
+    .trim()
+    .replace(/\s+(X|D?\d+\+?|\d+")$/, '')
+    .replace(/\s+/g, ' ');
+}
+async function showWeaponKeyword(t) {
+  if (!S.core || !S.core.weaponAbilities) S.core = (await data.downloadCore().catch(() => null)) || S.core;
+  const all = S.core?.weaponAbilities || {};
+  const k = weaponAbilityKey(t);
+  let hit = all[k];
+  if (!hit && /^ANTI-/.test(k)) hit = Object.entries(all).find(([key]) => key.startsWith('ANTI'))?.[1];
+  if (!hit) hit = Object.entries(all).find(([key]) => k.startsWith(key + ' ') || key === k.split(' ')[0])?.[1];
+  showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
+}
+
 // Composition, loadout and points — shown on the Unit options tab
 function buildInfo(u) {
   return `<h3 class="ds-h comp">Composition</h3>
@@ -900,7 +919,7 @@ function datasheet(u, f, counts, opts = {}) {
     return { n: (r?.n || a.n || '') + (a.p ? ` ${a.p}` : ''), d: r?.d || a.d || '' };
   };
   const chipList = (list) => list.map((a) => named(a)).map((a) => `<details class="rc"><summary>${esc(a.n)}</summary><div>${rich(a.d) || '<span class="muted">—</span>'}</div></details>`).join('');
-  const wrow = (w) => `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${w.k ? `<div class="wkw">${esc(plain(w.k))}</div>` : ''}</td><td>${esc(w.r)}</td><td>${esc(w.A)}</td><td>${esc(w.s)}</td><td>${esc(w.S)}</td><td>${esc(w.AP)}</td><td>${esc(w.D)}</td></tr>`;
+  const wrow = (w) => `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${w.k ? `<div class="wkw">${plain(w.k).split(/,\s*/).filter(Boolean).map((t) => `<button class="wkw-b" data-act="wkw" data-k="${esc(t.trim())}">${esc(t.trim())}</button>`).join('')}</div>` : ''}</td><td>${esc(w.r)}</td><td>${esc(w.A)}</td><td>${esc(w.s)}</td><td>${esc(w.S)}</td><td>${esc(w.AP)}</td><td>${esc(w.D)}</td></tr>`;
   const wt = (kind) => {
     const ws = u.w.filter((w) => w.t === kind);
     if (!ws.length) return '';
@@ -1680,6 +1699,7 @@ const A = {
     touch(curList());
     rerenderTopSheet();
   },
+  wkw: (el) => showWeaponKeyword(el.dataset.k),
   toggleReorder: () => {
     S.reorder = !S.reorder;
     rerender();

@@ -28,3 +28,5 @@ mv "$OUT/manifest.json.tmp" "$OUT/manifest.json"
 cat "$OUT/manifest.json"
 # Mission deck page (missions aren't in the CSV export)
 curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 -A "$UA" "$BASE/the-rules/mission-deck-2026-27" -o "$OUT/mission-deck.html" && echo "ok   mission-deck.html" || echo "miss mission-deck.html"
+# Core rules page (weapon abilities like [BLAST], [SUSTAINED HITS] aren't in the CSV export)
+curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 -A "$UA" "$BASE/the-rules/core-rules/" -o "$OUT/core-rules.html" && echo "ok   core-rules.html" || echo "miss core-rules.html"

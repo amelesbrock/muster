@@ -27,23 +27,12 @@ jobs:
       - name: Fetch Wahapedia data export
         timeout-minutes: 15
         run: bash scripts/fetch-data.sh
-      - name: Dev sample (temporary)
-        run: |
-          curl -fsSL -A "Mozilla/5.0 (compatible; MusterApp/1.0)" https://wahapedia.ru/wh40k11ed/the-rules/core-rules/ -o /tmp/core.html || echo CORE-FAIL
-          python3 - <<'PY'
-          import re
-          h = open('/tmp/core.html', encoding='utf-8').read()
-          print('CLEN', len(h))
-          for name in ['SUSTAINED HITS', 'Sustained Hits', 'BLAST', 'ASSAULT', 'Lethal Hits', 'WEAPON ABILITIES', 'Weapon Abilities']:
-              ms = list(re.finditer(re.escape(name), h))
-              print('CNT', name, len(ms))
-              for m in ms[:2]:
-                  print('CSNIP', name, '::', h[max(0, m.start()-500):m.start()+1100].replace('\n', ' '))
-          PY
       - name: Compile data for the app
         run: python3 scripts/compile.py
       - name: Compile missions
         run: python3 scripts/missions.py
+      - name: Compile weapon abilities
+        run: python3 scripts/core_rules.py
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)
