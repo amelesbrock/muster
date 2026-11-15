@@ -29,19 +29,12 @@ jobs:
         run: bash scripts/fetch-data.sh
       - name: Compile data for the app
         run: python3 scripts/compile.py
+      - name: Compile missions
+        run: python3 scripts/missions.py
       - name: Dev sample (temporary)
         run: |
-          python3 - <<'PY'
-          import re
-          h = open('site/data/mission-deck.html', encoding='utf-8').read()
-          for m in re.finditer(r"var (\w+)\s*=\s*\[(.*?)\];", h, re.S):
-              items = re.findall(r"'((?:[^'\\]|\\.)*)'", m.group(2))
-              print('ARR', m.group(1), len(items))
-              for it in items[:2]:
-                  print('  ITEM', m.group(1), it[:2600])
-          for m in list(re.finditer(r'ca7FdOpp', h))[:2]:
-              print('FDSNIP', h[max(0, m.start()-1500):m.start()+1500].replace('\n', ' '))
-          PY
+          tar czf /tmp/s.tgz -C site/data missions.json maps index.json core.json f/GC.json f/LoV.json
+          echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/s.tgz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)
