@@ -21,6 +21,12 @@ export async function cachedIndex() {
 }
 
 export function prepFaction(f) {
+  // Some datasheets only carry Character/Epic Hero on a model, not the unit: use the role as well
+  for (const u of f.units) {
+    const r = (u.role || '').toLowerCase();
+    if (r.includes('epic hero')) u.epic = u.character = true;
+    if (r.includes('character')) u.character = true;
+  }
   f.unitById = new Map(f.units.map((u) => [u.id, u]));
   f.enhById = new Map(f.enhancements.map((e) => [e.id, e]));
   f.detById = new Map(f.detachments.map((d) => [d.id, d]));

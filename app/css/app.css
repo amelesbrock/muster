@@ -347,3 +347,8 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .mgrid th, .mgrid td { border: 1px solid var(--line); padding: 6px; text-align: center; }
 .mgrid th { color: var(--muted); font-weight: 600; }
 .mb { margin-bottom: 12px; }
+
+/* linked leader + bodyguard */
+.linked { border: 1px solid rgba(201,161,74,.45); border-radius: 12px; padding: 8px 8px 0; margin-bottom: 10px; background: rgba(201,161,74,.05); }
+.linked-h { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 700; color: var(--accent); padding: 0 4px 8px; }
+.linked .entry { margin-bottom: 8px; }

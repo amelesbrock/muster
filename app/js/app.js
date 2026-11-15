@@ -167,14 +167,23 @@ async function ensureFaction(id) {
 }
 
 // ================================================================= list maths
-const ROLE_ORDER = ['Epic Hero', 'Character', 'Battleline', 'Infantry', 'Mounted', 'Beast', 'Swarm', 'Monster', 'Walker', 'Vehicle', 'Transport', 'Dedicated Transports', 'Aircraft', 'Artillery', 'Titanic', 'Fortifications', 'Other'];
+const ROLE_ORDER = ['Attached units', 'Epic Hero', 'Character', 'Battleline', 'Infantry', 'Mounted', 'Monster', 'Vehicle', 'Dedicated Transport', 'Fortification', 'Other'];
+// Slimmed-down sections: characters first, then by battlefield role.
+// Vehicles with a transport capacity stay Vehicles; only true Dedicated Transports get their own section.
 function roleGroup(u) {
   if (!u) return 'Other';
-  if (u.epic) return 'Epic Hero';
-  if (u.character) return 'Character';
-  if (u.battleline) return 'Battleline';
-  if (u.dt) return 'Dedicated Transports';
-  return u.role.replace(/ (Character|Epic Hero)$/, '') || 'Other';
+  const r = (u.role || '').toLowerCase();
+  const kw = u.kw.map((k) => k.toLowerCase());
+  if (u.epic || r.includes('epic hero')) return 'Epic Hero';
+  if (u.character || r.includes('character')) return 'Character';
+  if (u.battleline || r === 'battleline') return 'Battleline';
+  if (u.dt || r.startsWith('dedicated')) return 'Dedicated Transport';
+  if (r.startsWith('fortification') || kw.includes('fortification')) return 'Fortification';
+  if (kw.includes('monster') || r.startsWith('monster')) return 'Monster';
+  if (/vehicle|walker|transport|aircraft|titanic|artillery/.test(r) || kw.includes('vehicle')) return 'Vehicle';
+  if (/mounted|beast|cavalry/.test(r) || kw.includes('mounted')) return 'Mounted';
+  if (/infantry|swarm/.test(r) || kw.includes('infantry')) return 'Infantry';
+  return 'Other';
 }
 const roleRank = (r) => {
   const i = ROLE_ORDER.indexOf(r);
@@ -303,21 +312,29 @@ function dispositionsOf(l, f) {
 }
 
 // Entries ordered by role, with attached characters directly after their bodyguard
+// Sections of the list. Each item is either one entry, or a linked group:
+// a bodyguard unit with the Leader/Support characters attached to it, shown side by side.
 function groupEntries(l, f) {
-  const attached = new Map();
-  for (const e of l.units) if (e.attachTo && l.units.some((x) => x.uid === e.attachTo)) {
-    if (!attached.has(e.attachTo)) attached.set(e.attachTo, []);
-    attached.get(e.attachTo).push(e);
+  const linked = new Map();
+  for (const e of l.units) {
+    if (e.attachTo && l.units.some((x) => x.uid === e.attachTo)) {
+      if (!linked.has(e.attachTo)) linked.set(e.attachTo, []);
+      linked.get(e.attachTo).push(e);
+    }
   }
   const groups = new Map();
+  const put = (role, item) => {
+    if (!groups.has(role)) groups.set(role, []);
+    groups.get(role).push(item);
+  };
   for (const e of l.units) {
     if (e.attachTo && l.units.some((x) => x.uid === e.attachTo)) continue;
-    const role = roleGroup(f && f.unitById.get(e.unitId));
-    if (!groups.has(role)) groups.set(role, []);
-    groups.get(role).push(e, ...(attached.get(e.uid) || []));
+    if (linked.has(e.uid)) put('Attached units', { members: [...linked.get(e.uid), e] });
+    else put(roleGroup(f && f.unitById.get(e.unitId)), { members: [e] });
   }
   return [...groups.entries()].sort((a, b) => roleRank(a[0]) - roleRank(b[0]));
 }
+const itemPts = (it, f, l) => it.members.reduce((t, e) => t + entryPts(e, f, l), 0);
 
 // "2× Heavy stubber, 1× Flamer" from the chosen wargear options
 function wargearSummary(e, u, l) {
@@ -338,20 +355,22 @@ function listAsText(l, f) {
     l.disposition ? `Force Disposition: ${l.disposition}` : '',
     '',
   ].filter((x, i) => x || i === 3);
-  for (const [role, entries] of groupEntries(l, f)) {
+  for (const [role, items] of groupEntries(l, f)) {
     lines.push(role.toUpperCase());
-    for (const e of entries) {
-      const u = f.unitById.get(e.unitId);
-      const en = e.enh && f.enhById.get(e.enh);
-      const bits = [];
-      if (u && u.c.length > 1) bits.push(costOpt(u, e, l).d);
-      if (e.warlord) bits.push('Warlord');
-      if (en) bits.push(`${en.n} +${en.pts}`);
-      const host = e.attachTo && l.units.find((x) => x.uid === e.attachTo);
-      lines.push(`${host ? '   ↳ ' : '• '}${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f, l)} pts${host ? ` (with ${host.name})` : ''}`);
-      const ws = u ? wargearSummary(e, u, l) : '';
-      if (ws) lines.push(`     ${ws}`);
-      if (e.notes) lines.push(`     ${e.notes.replace(/\n/g, '; ')}`);
+    for (const it of items) {
+      if (it.members.length > 1) lines.push(`🔗 ${it.members.map((e) => e.name).join(' + ')} — ${itemPts(it, f, l)} pts`);
+      for (const e of it.members) {
+        const u = f.unitById.get(e.unitId);
+        const en = e.enh && f.enhById.get(e.enh);
+        const bits = [];
+        if (u && u.c.length > 1) bits.push(costOpt(u, e, l).d);
+        if (e.warlord) bits.push('Warlord');
+        if (en) bits.push(`${en.n} +${en.pts}`);
+        lines.push(`${it.members.length > 1 ? '   • ' : '• '}${e.name}${bits.length ? ' [' + bits.join(', ') + ']' : ''} — ${entryPts(e, f, l)} pts`);
+        const ws = u ? wargearSummary(e, u, l) : '';
+        if (ws) lines.push(`     ${ws}`);
+        if (e.notes) lines.push(`     ${e.notes.replace(/\n/g, '; ')}`);
+      }
     }
     lines.push('');
   }
@@ -581,10 +600,10 @@ function listBody(l, f) {
   ${issues.length ? `<div class="issues ${errs ? 'has-err' : ''}"><button class="issues-h" data-act="toggleIssues">${errs ? `⚠ ${plural(errs, 'problem')}` : '✓ Legal'}${issues.length - errs ? ` · ${plural(issues.length - errs, 'note')}` : ''}<span>${S.showIssues ? '▾' : '▸'}</span></button>
     ${S.showIssues ? `<ul>${issues.map((i) => `<li class="${i.level}">${esc(i.msg)}</li>`).join('')}</ul>` : ''}</div>` : l.units.length ? `<div class="issues ok"><div class="issues-h">✓ Legal list</div></div>` : ''}
   ${groupEntries(l, f)
-    .map(([role, entries]) => {
+    .map(([role, items]) => {
       const shut = S.foldList && S.foldList[role];
-      return `<section><button class="sec sec-btn" data-act="listFold" data-k="${esc(role)}"><span>${shut ? '▸' : '▾'} ${esc(role)} <span class="muted">(${entries.length})</span></span><span class="muted">${entries.reduce((t, e) => t + entryPts(e, f, l), 0)}</span></button>
-      ${shut ? '' : entries.map((e) => entryRow(e, l, f)).join('')}</section>`;
+      return `<section><button class="sec sec-btn" data-act="listFold" data-k="${esc(role)}"><span>${shut ? '▸' : '▾'} ${esc(role)} <span class="muted">(${items.length})</span></span><span class="muted">${items.reduce((t, it) => t + itemPts(it, f, l), 0)}</span></button>
+      ${shut ? '' : items.map((it) => (it.members.length > 1 ? `<div class="linked"><div class="linked-h"><span>🔗 ${esc(it.members.map((e) => e.name).join(' + '))}</span><b>${itemPts(it, f, l)}</b></div>${it.members.map((e) => entryRow(e, l, f)).join('')}</div>` : entryRow(it.members[0], l, f))).join('')}</section>`;
     })
     .join('')}
   ${l.units.length ? '' : `<div class="empty small"><p class="muted">No units yet — tap “Add unit”.</p></div>`}
@@ -604,8 +623,10 @@ function entryRow(e, l, f) {
   const ws = u ? wargearSummary(e, u, l) : '';
   if (ws) sub.push(esc(ws));
   if (e.notes) sub.push(esc(e.notes.split('\n')[0]));
-  return `<button class="entry ${host ? 'attached' : ''}" data-act="editEntry" data-uid="${e.uid}">
-    <div class="en-main"><div class="en-name">${host ? '<span class="muted">↳ </span>' : ''}${e.warlord ? '<span class="crown">♛</span>' : ''}${esc(e.name)}${u ? '' : ' <span class="warn">(missing)</span>'}</div>
+  const u2 = u;
+  const tag = host ? `<span class="tag">${u2 && u2.sup ? 'Support' : 'Leader'}</span> ` : l.units.some((x) => x.attachTo === e.uid) ? '<span class="tag">Bodyguard</span> ' : '';
+  return `<button class="entry" data-act="editEntry" data-uid="${e.uid}">
+    <div class="en-main"><div class="en-name">${tag}${e.warlord ? '<span class="crown">♛</span>' : ''}${esc(e.name)}${u ? '' : ' <span class="warn">(missing)</span>'}</div>
     ${sub.length ? `<div class="en-sub">${sub.join(' · ')}</div>` : ''}</div><div class="en-pts">${entryPts(e, f, l)}</div></button>`;
 }
 

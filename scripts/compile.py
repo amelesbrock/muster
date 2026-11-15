@@ -135,8 +135,12 @@ def unit(ds):
             ab.append({'ref': a['ability_id'], 't': a['type'], 'p': a['parameter'], 'mdl': a['model']})
         else:
             ab.append({'n': a['name'], 'd': a['description'], 't': a['type'], 'p': a['parameter'], 'mdl': a['model']})
-    kw = [k['keyword'] for k in g['Datasheets_keywords'] if k['is_faction_keyword'] != 'true' and not k['model']]
-    mkw = sorted({f"{k['model']}: {k['keyword']}" for k in g['Datasheets_keywords'] if k['is_faction_keyword'] != 'true' and k['model']})
+    # unit keywords: those with no model, or marked for ALL MODELS
+    kw = []
+    for k in g['Datasheets_keywords']:
+        if k['is_faction_keyword'] != 'true' and (not k['model'] or k['model'].strip().upper() == 'ALL MODELS') and k['keyword'] not in kw:
+            kw.append(k['keyword'])
+    mkw = sorted({f"{k['model']}: {k['keyword']}" for k in g['Datasheets_keywords'] if k['is_faction_keyword'] != 'true' and k['model'] and k['model'].strip().upper() != 'ALL MODELS'})
     fkw = sorted({k['keyword'] for k in g['Datasheets_keywords'] if k['is_faction_keyword'] == 'true'})
     kwl = [k.lower() for k in kw]
     return {
@@ -148,7 +152,8 @@ def unit(ds):
         'dmg': {'w': ds['damaged_w'], 'd': ds['damaged_description']} if ds['damaged_w'] else None,
         'link': ds['link'], 'm': models, 'c': costs, 'cs': steps, 'cx': extras, 'w': weapons, 'ab': ab, 'refs': refs,
         'kw': kw, 'mkw': mkw, 'fkw': fkw,
-        'character': 'character' in kwl, 'epic': 'epic hero' in kwl, 'battleline': 'battleline' in kwl,
+        'character': 'character' in kwl or 'character' in ds['role'].lower() or any(m.lower().endswith(': character') for m in mkw),
+        'epic': 'epic hero' in kwl or 'epic hero' in ds['role'].lower(), 'battleline': 'battleline' in kwl,
         'dt': 'dedicated transport' in kwl or ds['role'] == 'Dedicated Transports',
         'comp': [c['description'] for c in sorted(g['Datasheets_unit_composition'], key=lambda r: num(r['line']))],
         'opt': [o['description'] for o in sorted(g['Datasheets_options'], key=lambda r: num(r['line']))],
