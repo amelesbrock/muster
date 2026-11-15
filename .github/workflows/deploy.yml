@@ -27,6 +27,22 @@ jobs:
       - name: Fetch Wahapedia data export
         timeout-minutes: 15
         run: bash scripts/fetch-data.sh
+      - name: Dev sample (temporary)
+        run: |
+          python3 - <<'PY'
+          import csv, collections, re
+          csv.field_size_limit(10**9)
+          rd = lambda n: list(csv.DictReader(open(f'site/data/{n}.csv', encoding='utf-8-sig'), delimiter='|', quoting=csv.QUOTE_NONE))
+          dets = rd('Detachments')
+          print('DTYPE', collections.Counter(d['type'] for d in dets).most_common(40))
+          for d in dets[:6]: print('DROW', d)
+          for d in [x for x in dets if x['faction_id'] in ('LoV', 'GC')]: print('DGL', d['name'], '|', d['type'], '|', d['dp'], '|', d['legend'][:80])
+          ab = rd('Detachment_abilities')
+          for a in ab:
+              t = re.sub('<[^>]+>', ' ', a['description'])
+              if re.search(r'cannot include|must include|cannot be included|only include|Detachment tag|tag', t, re.I):
+                  print('DREST', a['detachment'], '|', a['name'], '|', t[:260])
+          PY
       - name: Compile data for the app
         run: python3 scripts/compile.py
       - name: Compile missions
