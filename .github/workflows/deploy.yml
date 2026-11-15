@@ -32,16 +32,15 @@ jobs:
       - name: Dev sample (temporary)
         run: |
           python3 - <<'PY'
-          import re, collections
+          import re
           h = open('site/data/mission-deck.html', encoding='utf-8').read()
-          print('LEN', len(h))
-          print('CLASSES', collections.Counter(re.findall(r'class="([^"]+)"', h)).most_common(60))
-          for name in ['Battlefield Dominance', 'Vital Link', 'Assassination', 'Tipping Point', 'Night Fighting', 'Take and Hold']:
-              for m in list(re.finditer(re.escape(name), h))[:3]:
-                  print('SNIP', name, '::', h[max(0, m.start()-700):m.start()+900].replace('\n', ' '))
-          for sc in re.findall(r'<script[^>]*>(.*?)</script>', h, re.S):
-              if 'Dominance' in sc or 'Disposition' in sc or 'generator' in sc.lower():
-                  print('SCRIPT', len(sc), sc[:3500].replace('\n', ' '))
+          for m in re.finditer(r"var (\w+)\s*=\s*\[(.*?)\];", h, re.S):
+              items = re.findall(r"'((?:[^'\\]|\\.)*)'", m.group(2))
+              print('ARR', m.group(1), len(items))
+              for it in items[:2]:
+                  print('  ITEM', m.group(1), it[:2600])
+          for m in list(re.finditer(r'ca7FdOpp', h))[:2]:
+              print('FDSNIP', h[max(0, m.start()-1500):m.start()+1500].replace('\n', ' '))
           PY
       - name: Stamp build
         run: |

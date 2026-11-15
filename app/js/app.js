@@ -8,7 +8,6 @@ import { weaponCounts, wargearPts, optionMax, starMax } from './wargear.js';
 const SIZES = {
   incursion: { label: 'Incursion', pts: 1000, dp: 2, enh: 2, unit: 2 },
   strike: { label: 'Strike Force', pts: 2000, dp: 3, enh: 4, unit: 3 },
-  custom: { label: 'Custom', pts: 2000, dp: 3, enh: 4, unit: 3 },
 };
 const PHASES = [
   { k: 'command', label: 'Command' },
@@ -180,6 +179,7 @@ const roleRank = (r) => {
 };
 
 const limitsOf = (l) => l.limits || SIZES.strike;
+const sizeKey = (l) => (SIZES[l.size] ? l.size : 'strike');
 
 // Which copy of this datasheet is the entry (1st, 2nd, 3rd…) — stepped costs depend on it
 function copyNo(e, l) {
@@ -480,14 +480,16 @@ function viewLists() {
 
 async function newListFlow() {
   const idx = await ensureIndex();
-  const draft = { name: '', faction: '', size: 'strike' };
+  const draft = { name: '', faction: '', size: 'strike', pts: null };
   newDraft = draft;
   showSheet(
     () => `${head('New army list')}<div class="sheet-body">
       <label class="lbl">List name</label><input id="nlName" placeholder="e.g. Votann – Hearthband" value="${esc(draft.name)}">
-      <label class="lbl">Battle size</label>
-      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${draft.size === k ? 'on' : ''}" data-act="nlSize" data-v="${k}">${s.label}${k !== 'custom' ? ` · ${s.pts}` : ''}</button>`).join('')}</div>
-      <p class="muted small">${draft.size === 'custom' ? 'Set your own limits after creating the list (⋯ → Battle size & limits).' : `${SIZES[draft.size].pts} pts · ${SIZES[draft.size].dp} DP · ${SIZES[draft.size].enh} enhancements · ${SIZES[draft.size].unit} of each unit (Battleline ×2)`}</p>
+      <label class="lbl">Battle size (sets the rules)</label>
+      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${draft.size === k ? 'on' : ''}" data-act="nlSize" data-v="${k}">${s.label}</button>`).join('')}</div>
+      <p class="muted small">${SIZES[draft.size].dp} DP · ${SIZES[draft.size].enh} enhancements · ${SIZES[draft.size].unit} of each unit (Battleline ×2)</p>
+      <label class="lbl">Points limit</label>
+      <div class="row gap"><input id="nlPts" inputmode="numeric" value="${draft.pts ?? SIZES[draft.size].pts}"><span class="muted small nowrap">e.g. 1250 with Strike Force rules</span></div>
       <label class="lbl">Faction</label>
       ${idx.factions.map((f) => `<button class="frow ${draft.faction === f.id ? 'on' : ''}" data-act="nlFaction" data-id="${f.id}"><span>${esc(f.n)}</span><span class="muted small">${S.cached.includes(f.id) ? 'saved' : f.units + ' units'}</span></button>`).join('')}
     </div><div class="sheet-foot"><button class="btn primary block" data-act="nlCreate" ${draft.faction ? '' : 'disabled'}>Create list</button></div>`,
@@ -498,6 +500,8 @@ let newDraft = null;
 function keepDraftName() {
   const n = $('#nlName');
   if (n && newDraft) newDraft.name = n.value;
+  const p = $('#nlPts');
+  if (p && newDraft) newDraft.pts = parseInt(p.value, 10) || null;
 }
 async function createList() {
   keepDraftName();
@@ -509,7 +513,8 @@ async function createList() {
   } catch (e) {
     return toast(e.message);
   }
-  const l = { id: uid(), name: d.name.trim() || `${f.n} ${SIZES[d.size].pts}`, factionId: f.id, factionName: f.n, size: d.size, limits: { ...SIZES[d.size] }, detachments: [], disposition: '', units: [], created: Date.now(), updated: Date.now() };
+  const pts = d.pts || SIZES[d.size].pts;
+  const l = { id: uid(), name: d.name.trim() || `${f.n} ${pts}`, factionId: f.id, factionName: f.n, size: d.size, limits: { ...SIZES[d.size], pts }, detachments: [], disposition: '', units: [], created: Date.now(), updated: Date.now() };
   delete l.limits.label;
   S.lists.push(l);
   await save('lists');
@@ -561,7 +566,7 @@ function listBody(l, f) {
   const dets = l.detachments.map((id) => f.detById.get(id)).filter(Boolean);
   const disp = dispositionsOf(l, f);
   return `
-  <div class="meters">${meter('Points', pts, L.pts)}${meter('DP', dp, L.dp)}${meter('Enhancements', enhN, L.enh)}</div>
+  <div class="meters" data-act="editLimits">${meter('Points', pts, L.pts)}${meter('DP', dp, L.dp)}${meter('Enhancements', enhN, L.enh)}</div>
   <button class="card dets" data-act="pickDetachments">
     <div class="muted small">Detachments</div>
     ${dets.length ? dets.map((d) => `<div class="det-line"><span>${esc(d.n)}</span><span class="tag">${d.dp} DP</span></div>`).join('') : '<div class="warn">Choose detachments…</div>'}
@@ -797,19 +802,18 @@ function wargearHtml(e, u, wg, models) {
       const chosen = sel[o.i] || {};
       const used = Object.values(chosen).reduce((a, b) => a + (+b || 0), 0);
       const sMax = starMax(o, models);
-      const usedStar = o.choices.reduce((t, c, ci) => t + (c.star ? +chosen[ci] || 0 : 0), 0);
       const single = max <= 1 && o.choices.length >= 1;
       return `<div class="wopt"><div class="wopt-t">${rich(o.text)}</div>
         ${o.choices.length ? `<div class="wopt-c">${o.choices
           .map((c, ci) => {
             const n = +chosen[ci] || 0;
-            const cap = Math.min(max - used + n, c.star ? sMax - usedStar + n : Infinity);
+            const cap = Math.min(max - used + n, c.star ? sMax : Infinity); // * limits apply to each weapon
             if (single) return `<button class="chip ${n ? 'on' : ''}" data-act="wgPick" data-uid="${e.uid}" data-o="${o.i}" data-c="${ci}">${esc(c.label)}</button>`;
             return `<div class="wrow"><span class="grow">${esc(c.label)}${c.star ? ' <span class="muted small">*</span>' : ''}</span>
               <button class="st-b sm" data-act="wgStep" data-uid="${e.uid}" data-o="${o.i}" data-c="${ci}" data-d="-1" ${n ? '' : 'disabled'}>−</button><b class="wn-n">${n}</b>
               <button class="st-b sm" data-act="wgStep" data-uid="${e.uid}" data-o="${o.i}" data-c="${ci}" data-d="1" ${cap > n ? '' : 'disabled'}>+</button></div>`;
           })
-          .join('')}${single ? '' : `<div class="muted small">${used}/${max} used${Number.isFinite(sMax) && o.choices.some((c) => c.star) ? ` · * max ${sMax}` : ''}</div>`}</div>` : ''}
+          .join('')}${single ? '' : `<div class="muted small">${used}/${max} used${Number.isFinite(sMax) && o.choices.some((c) => c.star) ? ` · * max ${sMax} of each` : ''}</div>`}</div>` : ''}
       </div>`;
     })
     .join('')}`;
@@ -887,13 +891,17 @@ function editLimitsSheet() {
   showSheet(() => {
     const L = limitsOf(l);
     return `${head('Battle size & limits')}<div class="sheet-body">
-      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${l.size === k ? 'on' : ''}" data-act="setSize" data-v="${k}">${s.label}</button>`).join('')}</div>
+      <label class="lbl">Rules from</label>
+      <div class="chips">${Object.entries(SIZES).map(([k, s]) => `<button class="chip ${sizeKey(l) === k ? 'on' : ''}" data-act="setSize" data-v="${k}">${s.label}</button>`).join('')}</div>
+      <label class="lbl">Points limit</label>
+      <input inputmode="numeric" data-bind="limit" data-k="pts" value="${L.pts}">
+      <p class="muted small">Any number works — e.g. 1250 using Strike Force rules.</p>
+      <details class="adv" ${L.dp !== SIZES[sizeKey(l)].dp || L.enh !== SIZES[sizeKey(l)].enh || L.unit !== SIZES[sizeKey(l)].unit ? 'open' : ''}><summary>Change other limits</summary>
       <div class="grid2 mt">
-        <label>Points<input inputmode="numeric" data-bind="limit" data-k="pts" value="${L.pts}"></label>
         <label>Detachment pts<input inputmode="numeric" data-bind="limit" data-k="dp" value="${L.dp}"></label>
         <label>Enhancements<input inputmode="numeric" data-bind="limit" data-k="enh" value="${L.enh}"></label>
         <label>Max per unit<input inputmode="numeric" data-bind="limit" data-k="unit" value="${L.unit}"></label>
-      </div><p class="muted small">Battleline units can be taken twice the max. Epic Heroes once.</p></div>`;
+      </div></details><p class="muted small">Battleline units can be taken twice the max. Epic Heroes once.</p></div>`;
   }, { onClose: () => rerender() });
 }
 
@@ -1240,6 +1248,7 @@ const A = {
   newList: () => newListFlow().catch((e) => toast(e.message)),
   nlSize: (el) => {
     keepDraftName();
+    if (newDraft.pts === SIZES[newDraft.size].pts) newDraft.pts = null;
     newDraft.size = el.dataset.v;
     rerenderTopSheet();
   },
@@ -1313,10 +1322,9 @@ const A = {
   setSize: (el) => {
     const l = curList();
     l.size = el.dataset.v;
-    if (l.size !== 'custom') {
-      l.limits = { ...SIZES[l.size] };
-      delete l.limits.label;
-    }
+    const pts = limitsOf(l).pts;
+    l.limits = { ...SIZES[l.size], pts };
+    delete l.limits.label;
     touch(l);
     rerenderTopSheet();
   },
@@ -1708,7 +1716,6 @@ document.addEventListener('change', async (e) => {
   if (b === 'limit') {
     const l = curList();
     l.limits = { ...limitsOf(l), [el.dataset.k]: Math.max(0, parseInt(el.value, 10) || 0) };
-    l.size = 'custom';
     touch(l);
     rerenderTopSheet();
   }
