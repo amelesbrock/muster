@@ -297,3 +297,26 @@ select { appearance: none; -webkit-appearance: none; background-image: linear-gr
 .rule .kwd, .st-body .kwd { font-variant: small-caps; text-transform: lowercase; font-weight: 700; letter-spacing: .03em; }
 .rule table, .st-body table { font-size: 13px; margin: 6px 0; }
 .rule td, .st-body td { border: 1px solid var(--line); padding: 4px 6px; }
+
+/* ---- folding sections, unit screen, wargear ---- */
+.fold { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; background: var(--surface); overflow: hidden; }
+.fold-h { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 13px 12px; font-weight: 700; letter-spacing: .02em; }
+.fold.open .fold-h { border-bottom: 1px solid var(--line); color: var(--accent); }
+.fold-b { padding: 0 12px; }
+.fold-b .pick-row:last-child { border-bottom: 0; }
+.lock { margin: 10px 2px; }
+.sec-btn { width: 100%; background: none; text-align: left; padding: 6px 2px; }
+section .sec-btn { margin-top: 16px; }
+.wopt { background: var(--surface2); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; }
+.wopt-t ul { margin: 4px 0; padding-left: 18px; }
+.wopt-c { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.wrow { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 0; border-top: 1px solid var(--line); }
+.st-b.sm { width: 34px; height: 32px; font-size: 18px; flex: none; }
+.st-b:disabled { opacity: .3; }
+.wn-n { min-width: 20px; text-align: center; }
+.wcount { color: var(--accent); font-weight: 800; }
+tr.dim td { opacity: .45; }
+details.others { margin-top: 6px; }
+details.others summary { cursor: pointer; padding: 4px 0; }
+.ds-inline { margin-top: 18px; padding-top: 6px; border-top: 2px solid var(--line); }
+.sec-btn { display: flex; justify-content: space-between; align-items: center; font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: var(--accent); font-weight: 700; }

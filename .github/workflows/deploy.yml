@@ -29,21 +29,6 @@ jobs:
         run: bash scripts/fetch-data.sh
       - name: Compile data for the app
         run: python3 scripts/compile.py
-      - name: Dev sample (temporary)
-        run: |
-          python3 - <<'PY'
-          import json,glob
-          out=[]
-          for p in glob.glob('site/data/f/*.json'):
-              f=json.load(open(p))
-              for u in f['units']:
-                  if u.get('cx'): out.append((f['id'],u['n'],u['cx']))
-          print('CXCOUNT',len(out))
-          for x in out[:25]: print('CX',json.dumps(x)[:400])
-          PY
-          ls site/data/f
-          tar czf /tmp/s.tgz -C site/data index.json core.json f/LoV.json f/GC.json f/TS.json f/CSM.json f/QT.json f/AC.json f/AE.json f/NEC.json 2>/dev/null || tar czf /tmp/s.tgz -C site/data index.json core.json f
-          echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/s.tgz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)

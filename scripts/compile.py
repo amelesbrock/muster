@@ -109,8 +109,10 @@ def unit(ds):
         o = step_re.search(b['label'])
         if o:
             steps.append({'label': b['label'], 'from': int(o.group(1)), 'rows': b['rows']})
-        elif base is None and (not b['label'] or b['label'].upper().startswith('YOUR') or not extras):
+        elif base is None:
             base = b
+        elif all(r['models'] is not None for r in b['rows']) and not b['label'].upper().startswith('WARGEAR'):
+            base['rows'].extend(b['rows'])  # alternative unit compositions are just more size options
         else:
             extras.append({'label': b['label'], 'rows': b['rows']})
     costs = base['rows'] if base else []
@@ -180,6 +182,22 @@ for fac in factions:
     refs = {}
     for u in units:
         refs.update(u.pop('refs'))
+    # Units borrowed from another faction (e.g. Astra Militarum in Genestealer Cults) are only
+    # allowed with the detachment that brings them in: find it by the borrowed faction's name/keywords.
+    def src_base(x):
+        return re.sub(r'\s*\((Warhammer Legends|Forge World)\)', '', x or '').strip()
+    own_kw = collections.Counter(k for u in units if src_base(u['src']) == fac['name'] for k in u['fkw'])
+    det_text = {d['id']: plain_text(' '.join(a['name'] + ' ' + a['description'] for a in detab if a['detachment_id'] == d['id']))
+                for d in detachments if d['faction_id'] == fid and d['id'] not in BA}
+    crossovers = []
+    for grp in sorted({src_base(u['src']) for u in units} - {fac['name'], ''}):
+        members = [u for u in units if src_base(u['src']) == grp]
+        kws = sorted({k for u in members for k in u['fkw'] if k not in own_kw}) or [grp]
+        unlock = [did for did, txt in det_text.items() if any(re.search(re.escape(k), txt, re.I) for k in kws + [grp])]
+        for u in members:
+            u['xg'] = grp
+            u['xu'] = unlock
+        crossovers.append({'n': grp, 'kw': kws, 'units': len(members), 'unlock': unlock})
     dets = []
     for d in detachments:
         if d['faction_id'] != fid or d['id'] in BA:
@@ -197,18 +215,20 @@ for fac in factions:
                              and 'boarding' not in (s['type'] or '').lower()])
     army_rules = {}
     for u in units:
+        if u.get('xg'):
+            continue  # borrowed units bring their own faction's army rule
         for a in u['ab']:
             if a.get('t') == 'Faction' and a.get('ref'):
                 army_rules[a['ref']] = refs[a['ref']]
     out = {'id': fid, 'n': fac['name'], 'units': units, 'detachments': dets, 'enhancements': fac_enh,
-           'stratagems': fac_str, 'abilities': refs, 'armyRules': list(army_rules.values())}
+           'stratagems': fac_str, 'abilities': refs, 'armyRules': list(army_rules.values()), 'crossovers': crossovers}
     with open(f'{D}/f/{fid}.json', 'w', encoding='utf-8') as fh:
         json.dump(out, fh, ensure_ascii=False, separators=(',', ':'))
     size = os.path.getsize(f'{D}/f/{fid}.json')
     index.append({'id': fid, 'n': fac['name'], 'units': len(units), 'detachments': len(dets), 'bytes': size})
     stats['units'] += len(units)
     print(f"{fid:5} {fac['name'][:22]:22} units={len(units):4} dets={len(dets):3} enh={len(fac_enh):3} strats={len(fac_str):4} {size//1024}KB "
-          f"srcEd={dict(collections.Counter(u['srcEd'] for u in units))} legends={sum(u['legends'] for u in units)}")
+          f"legends={sum(u['legends'] for u in units)} crossovers={[(c['n'], c['units'], len(c['unlock'])) for c in crossovers]}")
 
 core = [strat(s) for s in strats if not s['faction_id'] and not s['detachment_id'] and 'boarding' not in (s['type'] or '').lower()
         and s['name']]

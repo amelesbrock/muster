@@ -9,7 +9,7 @@ An installable web app for building Warhammer 40,000 army lists, tracking games 
 - **Android:** open the link in Chrome → **Install** (or ⋮ → Install app).
 
 ## Where the data comes from
-Every night (03:17 UTC) a GitHub Action downloads Wahapedia's public data export, compiles it into small per-faction files and republishes the site. Data powered by [Wahapedia](https://wahapedia.ru).
+On the 1st of each month (03:17 UTC) a GitHub Action downloads Wahapedia's public data export, compiles it into small per-faction files and republishes the site. Data powered by [Wahapedia](https://wahapedia.ru).
 
 - To update straight away (e.g. after a points change): on GitHub open **Actions → Build and deploy Muster → Run workflow**. Then in the app: ⚙ → **Update data on this phone**.
 - If Wahapedia can't be reached, the build fails on purpose and the previous version stays live.
