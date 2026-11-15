@@ -408,7 +408,45 @@ function closeAllSheets() {
   sheets.length = 0;
   renderSheets();
 }
+// ---- phone Back button: mirror the app's screens in browser history ----
+// depth = open sheets + an open list + being on a tab other than Army
+let histDepth = 0;
+let ignorePops = 0;
+const navDepth = () => sheets.length + (S.tab === 'army' && S.openListId ? 1 : 0) + (S.tab !== 'army' ? 1 : 0);
+function syncHistory() {
+  const d = navDepth();
+  if (d > histDepth) {
+    for (let i = histDepth; i < d; i++) history.pushState({ muster: i + 1 }, '');
+    histDepth = d;
+  } else if (d < histDepth) {
+    ignorePops++;
+    history.go(d - histDepth);
+    histDepth = d;
+  }
+}
+window.addEventListener('popstate', () => {
+  if (ignorePops > 0) {
+    ignorePops--;
+    return;
+  }
+  histDepth = Math.max(0, histDepth - 1);
+  if (sheets.length) {
+    const top = sheets[sheets.length - 1];
+    if (top.opts.onBack) top.opts.onBack();
+    else closeSheet();
+  } else if (S.tab === 'army' && S.openListId) {
+    S.openListId = null;
+    S.reorder = false;
+    render();
+  } else if (S.tab !== 'army') {
+    S.tab = 'army';
+    render();
+  }
+  syncHistory();
+});
+
 function renderSheets() {
+  setTimeout(syncHistory, 0);
   $('#sheets').innerHTML = sheets
     .map((s, i) => `<div class="scrim" data-act="${i === sheets.length - 1 ? 'closeSheet' : ''}"></div><div class="sheet ${s.opts.tall ? 'tall' : ''}" data-sheet="${i}">${s.render()}</div>`)
     .join('');
@@ -461,6 +499,7 @@ function render() {
   keepScroll = false;
   if (S.tab === 'army' && S.openListId) hydrateList();
   if (S.tab === 'strats') hydrateStrats();
+  setTimeout(syncHistory, 0);
 }
 const rerender = () => {
   keepScroll = true;
@@ -891,13 +930,26 @@ function weaponAbilityKey(t) {
     .replace(/\s+/g, ' ');
 }
 async function showWeaponKeyword(t) {
-  if (!S.core || !S.core.weaponAbilities) S.core = (await data.downloadCore().catch(() => null)) || S.core;
+  if (!S.core || !S.core.weaponAbilities || !S.core.actions) S.core = (await data.downloadCore().catch(() => null)) || S.core;
   const all = S.core?.weaponAbilities || {};
   const k = weaponAbilityKey(t);
   let hit = all[k];
   if (!hit && /^ANTI-/.test(k)) hit = Object.entries(all).find(([key]) => key.startsWith('ANTI'))?.[1];
   if (!hit) hit = Object.entries(all).find(([key]) => k.startsWith(key + ' ') || key === k.split(' ')[0])?.[1];
-  showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
+  // e.g. [PISTOL] says it is identical to [CLOSE-QUARTERS]: show that rule's text too
+  const extra = [];
+  if (hit && /identical|same as|treated as/i.test(plain(hit.d))) {
+    const own = weaponAbilityKey(hit.n);
+    for (const m of plain(hit.d).matchAll(/\[([A-Z][A-Z -]+?)\]/g)) {
+      const k2 = weaponAbilityKey(m[1]);
+      if (k2 !== own && all[k2] && !extra.includes(k2)) extra.push(k2);
+    }
+  }
+  // actions the rule points to, e.g. [INDIRECT FIRE] → "indirect shooting", [ASSAULT] → "assault shooting"
+  const acts = S.core?.actions || {};
+  const txt = hit ? plain(hit.d).toLowerCase() : '';
+  const actHits = Object.keys(acts).filter((a) => a.length > 4 && txt.includes(a.toLowerCase()));
+  showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>${extra.map((k2) => `<h3 class="ds-h abil">${esc(all[k2].n)} — applies to this weapon</h3><div class="rule">${rich(all[k2].d)}</div>`).join('')}${actHits.map((a) => `<h3 class="ds-h ranged">${esc(a)}</h3><div class="rule">${rich(acts[a])}</div>`).join('')}` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
 }
 
 // Composition, loadout and points — shown on the Unit options tab

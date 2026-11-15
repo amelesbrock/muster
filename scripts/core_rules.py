@@ -36,13 +36,30 @@ def main():
         k = key(name)
         if k not in out or len(body) > len(out[k]['d']):
             out[k] = {'n': name, 'd': body}
+    # Actions such as INDIRECT SHOOTING / ASSAULT SHOOTING that weapon abilities point to
+    actions = {}
+    for m in re.finditer(r'class="str11HeadBlock str11Name"[^>]*>(.*?)<span class="h_number">', h, re.S):
+        name = re.sub(r'<[^>]+>', '', m.group(1)).strip().upper()
+        rest = h[m.end():m.end() + 30000]
+        stop = re.search(r'<a name=|class="str11HeadBlock str11Name"', rest)
+        if stop:
+            rest = rest[:stop.start()]
+        t0 = rest.find('<div class="str11Text">')
+        if t0 < 0:
+            continue
+        t1 = rest.find('<div class="str11Bg', t0)
+        body = re.sub(r'<script.*?</script>', '', rest[t0:t1 if t1 > 0 else None], flags=re.S)
+        if name and (name not in actions or len(body) > len(actions[name])):
+            actions[name] = body
     path = f'{D}/core.json'
     core = json.load(open(path, encoding='utf-8')) if os.path.exists(path) else {}
     core['weaponAbilities'] = out
+    core['actions'] = actions
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(core, fh, ensure_ascii=False, separators=(',', ':'))
     os.remove(SRC)
     print('weapon abilities:', len(out), sorted(out))
+    print('actions:', len(actions), sorted(actions)[:60])
 
 
 if __name__ == '__main__':
