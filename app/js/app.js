@@ -763,7 +763,9 @@ function eligibleEnh(u, l, f) {
   if (!u || u.epic) return [];
   return f.enhancements.filter((x) => l.detachments.includes(x.det) && (u.enh.length ? u.enh.includes(x.id) : u.character && !x.up));
 }
+let entryTab = 'sheet';
 function editEntry(entryUid) {
+  entryTab = 'sheet';
   const l = curList();
   const f = factions.get(l.factionId);
   showSheet(
@@ -791,11 +793,7 @@ function editEntry(entryUid) {
         if (u.sup && sup) return `<span class="warn small">has ${esc(sup.name)}</span>`;
         return `<span class="muted small">${entryPts(h, f, l)} pts</span>`;
       };
-      return `${head(e.name)}<div class="sheet-body">
-        <div class="row"><div class="big-pts grow">${entryPts(e, f, l)} <span>pts</span></div>${e.warlord ? '<span class="tag big">♛ Warlord</span>' : ''}</div>
-        ${co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
-        ${wg.pts ? `<p class="muted small">Includes wargear: ${wg.lines.map((x) => `${x.n}× ${esc(x.name)} (+${x.each * x.n})`).join(', ')}</p>` : ''}
-        ${u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => `<button class="chip ${(e.cost || 0) === i ? 'on' : ''}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}</button>`).join('')}</div>` : ''}
+      const optionsPart = `        ${u.c.length > 1 ? `<label class="lbl">Unit size</label><div class="chips">${u.c.map((c, i) => `<button class="chip ${(e.cost || 0) === i ? 'on' : ''}" data-act="setCost" data-uid="${e.uid}" data-v="${i}">${esc(c.d)} · ${c.pts}</button>`).join('')}</div>` : ''}
         ${u.cx && u.cx.some((b) => !/wargear/i.test(b.label)) ? u.cx.map((b, bi) => (/wargear/i.test(b.label) ? '' : `<label class="lbl">${esc(b.label || 'Options')}</label><div class="chips">${b.rows.map((r, ri) => `<button class="chip ${(e.ex || []).includes(bi + ':' + ri) ? 'on' : ''}" data-act="toggleEx" data-uid="${e.uid}" data-v="${bi}:${ri}">${esc(r.d)} · +${r.pts}</button>`).join('')}</div>`)).join('') : ''}
         ${u.character ? `<label class="toggle"><input type="checkbox" data-act="setWarlord" data-uid="${e.uid}" ${e.warlord ? 'checked' : ''}><span>Warlord</span></label>` : ''}
         ${u.leads.length ? `<label class="lbl">${u.sup ? 'Support — joins a unit even if it has a Leader' : 'Leading'}</label>
@@ -809,7 +807,16 @@ function editEntry(entryUid) {
         <label class="lbl">Notes</label>
         <textarea data-bind="entryNotes" data-uid="${e.uid}" rows="2" placeholder="Anything else to remember">${esc(e.notes)}</textarea>
         <div class="row gap wrap mt"><button class="btn ghost grow" data-act="dupEntry" data-uid="${e.uid}">Duplicate</button><button class="btn danger grow" data-act="removeEntry" data-uid="${e.uid}">Remove</button></div>
-        <div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null)}</div>
+        <div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { build: true })}</div>`;
+      const ws = wargearSummary(e, u, l);
+      const en = e.enh && f.enhById.get(e.enh);
+      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true })}</div>`;
+      return `${head(e.name)}<div class="sheet-body">
+        <div class="row"><div class="big-pts grow">${entryPts(e, f, l)} <span>pts</span></div>${e.warlord ? '<span class="tag big">♛ Warlord</span>' : ''}</div>
+        ${co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
+        ${wg.pts ? `<p class="muted small">Includes wargear: ${wg.lines.map((x) => `${x.n}× ${esc(x.name)} (+${x.each * x.n})`).join(', ')}</p>` : ''}
+        <div class="seg tabs">${[['sheet', 'Datasheet'], ['opts', 'Unit options']].map(([k, n]) => `<button class="${entryTab === k ? 'on' : ''}" data-act="entryTab" data-v="${k}">${n}</button>`).join('')}</div>
+        ${entryTab === 'sheet' ? sheetPart : optionsPart}
       </div>`;
     },
     { tall: true, onClose: () => rerender() }
@@ -843,8 +850,19 @@ function wargearHtml(e, u, wg, models) {
     .join('')}`;
 }
 
+// Composition, loadout and points — shown on the Unit options tab
+function buildInfo(u) {
+  return `<h3 class="ds-h comp">Composition</h3>
+  ${u.comp.length ? `<div class="rule">${u.comp.map(rich).join('<br>')}</div>` : ''}
+  ${u.load ? `<div class="rule">${rich(u.load)}</div>` : ''}
+  <h3 class="ds-h pts">Points</h3><div class="chips">${u.c.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('') || '<span class="muted">—</span>'}</div>
+  ${(u.cx || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>+${c.pts}</b></span>`).join('')}</div>`).join('')}
+  ${(u.cs || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('')}</div>`).join('')}`;
+}
+
 // datasheet (counts: Map of weapon name -> number carried, or null to list every profile)
-function datasheet(u, f, counts) {
+function datasheet(u, f, counts, opts = {}) {
+  if (opts.build) return buildInfo(u);
   const ab = (t) => u.ab.filter((a) => a.t === t);
   const named = (a) => {
     const r = a.ref ? f.abilities[a.ref] : a;
@@ -858,7 +876,7 @@ function datasheet(u, f, counts) {
     const carried = counts ? ws.filter((w) => counts.get(w.n)) : ws;
     const other = counts ? ws.filter((w) => !counts.get(w.n)) : [];
     const thead = `<thead><tr><th class="wn"></th><th>Range</th><th>A</th><th>${kind === 'ranged' ? 'BS' : 'WS'}</th><th>S</th><th>AP</th><th>D</th></tr></thead>`;
-    return `<h3 class="ds-h">${kind === 'ranged' ? '⌖ Ranged weapons' : '⚔ Melee weapons'}</h3>
+    return `<h3 class="ds-h ${kind}">${kind === 'ranged' ? '⌖ Ranged weapons' : '⚔ Melee weapons'}</h3>
       ${carried.length ? `<table class="wtab">${thead}<tbody>${carried.map(wrow).join('')}</tbody></table>` : ''}
       ${other.length ? `<details class="others"><summary class="muted small">${other.length} other profile${other.length > 1 ? 's' : ''} (options)</summary><table class="wtab">${thead}<tbody>${other.map(wrow).join('')}</tbody></table></details>` : ''}`;
   };
@@ -870,24 +888,27 @@ function datasheet(u, f, counts) {
   ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => `<td>${esc(m[k] || '-')}</td>`).join('')}</tr>`).join('')}</tbody></table>
   ${u.m.filter((m) => m.inv).map((m) => `<div class="inv">🛡 Invulnerable save <b>${esc(m.inv)}</b>${u.m.length > 1 ? ` (${esc(m.n)})` : ''}${m.invd ? ` — ${rich(m.invd)}` : ''}</div>`).join('')}
   ${wt('ranged')}${wt('melee')}
-  ${ab('Core').length ? `<h3 class="ds-h">Core</h3><div class="rulechips">${chipList(ab('Core'))}</div>` : ''}
-  ${ab('Faction').length ? `<h3 class="ds-h">Faction</h3><div class="rulechips">${chipList(ab('Faction'))}</div>` : ''}
-  ${ab('Datasheet').length ? `<h3 class="ds-h">Abilities</h3>${ab('Datasheet').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
-  ${ab('Wargear').length ? `<h3 class="ds-h">Wargear abilities</h3>${ab('Wargear').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
+  ${ab('Core').length ? `<h3 class="ds-h core">Core</h3><div class="rulechips">${chipList(ab('Core'))}</div>` : ''}
+  ${ab('Faction').length ? `<h3 class="ds-h fac">Faction</h3><div class="rulechips">${chipList(ab('Faction'))}</div>` : ''}
+  ${ab('Datasheet').length ? `<h3 class="ds-h abil">Abilities</h3>${ab('Datasheet').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
+  ${ab('Wargear').length ? `<h3 class="ds-h abil">Wargear abilities</h3>${ab('Wargear').map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('')}` : ''}
   ${other.length ? other.map(named).map((a) => `<div class="rule"><b>${esc(a.n)}</b><div>${rich(a.d)}</div></div>`).join('') : ''}
   ${u.dmg ? `<div class="rule"><b>Damaged: ${esc(u.dmg.w)} wounds remaining</b><div>${rich(u.dmg.d)}</div></div>` : ''}
-  ${leadNames.length || u.lh ? `<h3 class="ds-h">${u.sup ? 'Support' : 'Leader'}</h3><div class="rule">${u.lh ? `<div>${rich(u.lh)}</div>` : ''}${leadNames.length ? `<div>${leadNames.map((n) => `■ ${esc(n)}`).join('<br>')}</div>` : ''}${u.lf ? `<div class="muted small">${rich(u.lf)}</div>` : ''}</div>` : ''}
+  ${leadNames.length || u.lh ? `<h3 class="ds-h lead">${u.sup ? 'Support' : 'Leader'}</h3><div class="rule">${u.lh ? `<div>${rich(u.lh)}</div>` : ''}${leadNames.length ? `<div>${leadNames.map((n) => `■ ${esc(n)}`).join('<br>')}</div>` : ''}${u.lf ? `<div class="muted small">${rich(u.lf)}</div>` : ''}</div>` : ''}
   ${ledBy.length ? `<p class="small muted">Can be led by: ${esc(ledBy.join(', '))}</p>` : ''}
-  ${u.tr ? `<h3 class="ds-h">Transport</h3><div class="rule">${rich(u.tr)}</div>` : ''}
-  <h3 class="ds-h">Composition</h3>
+  ${u.tr ? `<h3 class="ds-h comp">Transport</h3><div class="rule">${rich(u.tr)}</div>` : ''}
+  ${opts.play ? '' : `<h3 class="ds-h comp">Composition</h3>
   ${u.comp.length ? `<div class="rule">${u.comp.map(rich).join('<br>')}</div>` : ''}
   ${u.load ? `<div class="rule">${rich(u.load)}</div>` : ''}
-  ${!counts && u.opt.length ? `<div class="rule"><b>Wargear options</b><ul class="opts">${u.opt.map((o) => `<li>${rich(o)}</li>`).join('')}</ul></div>` : ''}
-  <h3 class="ds-h">Points</h3><div class="chips">${u.c.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('') || '<span class="muted">—</span>'}</div>
+  ${!counts && u.opt.length ? `<div class="rule"><b>Wargear options</b><ul class="opts">${u.opt.map((o) => `<li>${rich(o)}</li>`).join('')}</ul></div>` : ''}`}
+  ${opts.play ? '' : `  <h3 class="ds-h pts">Points</h3><div class="chips">${u.c.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('') || '<span class="muted">—</span>'}</div>
   ${(u.cx || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>+${c.pts}</b></span>`).join('')}</div>`).join('')}
-  ${(u.cs || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('')}</div>`).join('')}
-  ${u.mkw.length ? `<p class="muted small">${esc(u.mkw.join(' · '))}</p>` : ''}
-  <p class="muted small">Faction keywords: ${esc(u.fkw.join(', '))}${u.src ? ` · Source: ${esc(u.src)}` : ''}</p>
+  ${(u.cs || []).map((st) => `<div class="muted small mt">${esc(st.label)}</div><div class="chips">${st.rows.map((c) => `<span class="chip static">${esc(c.d)} · <b>${c.pts}</b></span>`).join('')}</div>`).join('')}`}
+  <h3 class="ds-h kwh">Keywords</h3>
+  <div class="kwbox"><div><span class="kwl">Keywords</span> ${esc(u.kw.join(', ') || '—')}</div>
+    ${u.mkw.length ? `<div class="small">${u.mkw.map((m) => esc(m)).join('<br>')}</div>` : ''}
+    <div><span class="kwl">Faction</span> ${esc(u.fkw.join(', ') || '—')}</div></div>
+  ${u.src ? `<p class="muted small">Source: ${esc(u.src)}</p>` : ''}
   ${u.link ? `<p class="small"><a href="${esc(u.link)}" target="_blank" rel="noopener">View on Wahapedia ↗</a></p>` : ''}`;
 }
 function viewUnit(id, canAdd, factionId) {
@@ -1623,6 +1644,12 @@ const A = {
     e.attachTo = el.dataset.v;
     touch(curList());
     rerenderTopSheet();
+  },
+  entryTab: (el) => {
+    entryTab = el.dataset.v;
+    rerenderTopSheet();
+    const b = document.querySelector('.sheet:last-of-type .sheet-body');
+    if (b) b.scrollTop = 0;
   },
   toggleEx: (el) => {
     const e = entryOf(el);

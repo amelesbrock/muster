@@ -352,3 +352,23 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .linked { border: 1px solid rgba(201,161,74,.45); border-radius: 12px; padding: 8px 8px 0; margin-bottom: 10px; background: rgba(201,161,74,.05); }
 .linked-h { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 700; color: var(--accent); padding: 0 4px 8px; }
 .linked .entry { margin-bottom: 8px; }
+
+/* coloured datasheet headings */
+.ds-h { --hc: var(--accent); color: var(--hc); background: linear-gradient(90deg, color-mix(in srgb, var(--hc) 22%, transparent), transparent 85%); border-left: 3px solid var(--hc); padding: 6px 10px; border-radius: 6px; }
+.ds-h.ranged { --hc: #5fa8e8; }
+.ds-h.melee { --hc: #e5735a; }
+.ds-h.core { --hc: #a7a29a; }
+.ds-h.fac { --hc: #b98fd6; }
+.ds-h.abil { --hc: #d4ad55; }
+.ds-h.lead { --hc: #74c27a; }
+.ds-h.comp { --hc: #4fbfb0; }
+.ds-h.pts { --hc: #d4ad55; }
+.ds-h.kwh { --hc: #a7a29a; }
+.wtab.ranged-t th, .ds-h.ranged + table th { color: #8fc1ee; }
+.stats th { color: var(--accent); }
+.kwbox { background: var(--surface2); border-radius: 10px; padding: 10px 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; display: flex; flex-direction: column; gap: 6px; }
+.kwl { display: inline-block; font-size: 10px; font-weight: 800; color: var(--bg); background: var(--muted); border-radius: 4px; padding: 1px 6px; margin-right: 6px; letter-spacing: .06em; }
+.loadout { background: rgba(201,161,74,.1); border-radius: 8px; padding: 6px 10px; }
+.enh-rule { border-left: 3px solid var(--accent); }
+.seg.tabs { position: sticky; top: -8px; z-index: 2; margin: 10px 0 4px; box-shadow: 0 6px 10px -6px rgba(0,0,0,.6); }
+.ds-inline { margin-top: 8px; padding-top: 0; border-top: 0; }
