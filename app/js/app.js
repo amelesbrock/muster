@@ -1791,7 +1791,27 @@ async function boot() {
   render();
   store.requestPersistence();
   // refresh the faction index quietly in the background
-  data.fetchIndex().then((i) => (S.index = i)).catch(() => {});
+  // when the site has newer data than this phone (monthly), refresh saved factions quietly
+  data
+    .fetchIndex()
+    .then(async (i) => {
+      S.index = i;
+      let changed = false;
+      for (const id of S.cached) {
+        const f = await getFaction(id);
+        if (f && f.built !== i.built) {
+          const nf = await data.downloadFaction(id, i.built);
+          factions.set(id, nf);
+          changed = true;
+        }
+      }
+      if (changed) {
+        S.core = await data.downloadCore().catch(() => S.core);
+        toast('Game data updated');
+        rerender();
+      }
+    })
+    .catch(() => {});
 }
 boot().catch((e) => {
   console.error(e);
