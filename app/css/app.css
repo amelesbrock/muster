@@ -372,3 +372,12 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .enh-rule { border-left: 3px solid var(--accent); }
 .seg.tabs { position: sticky; top: -8px; z-index: 2; margin: 10px 0 4px; box-shadow: 0 6px 10px -6px rgba(0,0,0,.6); }
 .ds-inline { margin-top: 8px; padding-top: 0; border-top: 0; }
+
+/* reorder mode */
+.ro-row { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
+.ro-row .entry, .ro-row .linked { margin-bottom: 0; }
+.ro { display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+.ro-b { width: 38px; flex: 1; min-height: 30px; border-radius: 8px; background: var(--surface2); border: 1px solid var(--line); color: var(--accent); text-align: center; font-size: 13px; }
+.ro-b:disabled { opacity: .25; }
+.reorder-btn { margin-top: 14px; }
+.reorder-btn.on { border-color: var(--accent); color: var(--accent); }

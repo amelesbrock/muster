@@ -603,12 +603,43 @@ function listBody(l, f) {
     .map(([role, items]) => {
       const shut = S.foldList && S.foldList[role];
       return `<section><button class="sec sec-btn" data-act="listFold" data-k="${esc(role)}"><span>${shut ? '▸' : '▾'} ${esc(role)} <span class="muted">(${items.length})</span></span><span class="muted">${items.reduce((t, it) => t + itemPts(it, f, l), 0)}</span></button>
-      ${shut ? '' : items.map((it) => (it.members.length > 1 ? `<div class="linked"><div class="linked-h"><span>🔗 ${esc(it.members.map((e) => e.name).join(' + '))}</span><b>${itemPts(it, f, l)}</b></div>${it.members.map((e) => entryRow(e, l, f)).join('')}</div>` : entryRow(it.members[0], l, f))).join('')}</section>`;
+      ${shut ? '' : items.map((it, idx) => itemHtml(it, idx, items.length, role, l, f)).join('')}</section>`;
     })
     .join('')}
+  ${l.units.length > 1 ? `<button class="btn ghost block reorder-btn ${S.reorder ? 'on' : ''}" data-act="toggleReorder">${S.reorder ? '✓ Done reordering' : '⇅ Reorder units'}</button>` : ''}
   ${l.units.length ? '' : `<div class="empty small"><p class="muted">No units yet — tap “Add unit”.</p></div>`}
   <div class="spacer"></div>
   <button class="fab" data-act="addUnit">＋ Add unit</button>`;
+}
+
+// One list item: a single unit or a linked Leader + bodyguard group; with ▲▼ in reorder mode
+function itemHtml(it, idx, n, role, l, f) {
+  const arrows = S.reorder
+    ? `<div class="ro"><button class="ro-b" data-act="moveItem" data-uid="${it.members[it.members.length - 1].uid}" data-d="-1" ${idx ? '' : 'disabled'} aria-label="Move up">▲</button><button class="ro-b" data-act="moveItem" data-uid="${it.members[it.members.length - 1].uid}" data-d="1" ${idx < n - 1 ? '' : 'disabled'} aria-label="Move down">▼</button></div>`
+    : '';
+  const body =
+    it.members.length > 1
+      ? `<div class="linked grow"><div class="linked-h"><span>🔗 ${esc(it.members.map((e) => e.name).join(' + '))}</span><b>${itemPts(it, f, l)}</b></div>${it.members.map((e) => entryRow(e, l, f)).join('')}</div>`
+      : entryRow(it.members[0], l, f);
+  return arrows ? `<div class="ro-row">${arrows}<div class="grow">${body}</div></div>` : body;
+}
+
+// Move a unit (or linked group) up/down within its section, then rebuild the list order
+function moveItem(uidKey, d) {
+  const l = curList();
+  const f = factions.get(l.factionId);
+  const secs = groupEntries(l, f);
+  for (const [, items] of secs) {
+    const i = items.findIndex((it) => it.members.some((e) => e.uid === uidKey));
+    if (i < 0) continue;
+    const j = i + d;
+    if (j < 0 || j >= items.length) return;
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  // bodyguard first, then its characters, so the group stays together
+  l.units = secs.flatMap(([, items]) => items.flatMap((it) => [it.members[it.members.length - 1], ...it.members.slice(0, -1)]));
+  touch(l);
+  rerender();
 }
 
 function entryRow(e, l, f) {
@@ -1440,6 +1471,7 @@ const A = {
   },
   backToLists: () => {
     S.openListId = null;
+    S.reorder = false;
     render();
   },
   downloadForList: async () => {
@@ -1618,7 +1650,10 @@ const A = {
     if (el.dataset.close) closeSheet();
   },
   viewUnit: (el) => viewUnit(el.dataset.id, !!el.dataset.add),
-  editEntry: (el) => editEntry(el.dataset.uid),
+  editEntry: (el) => {
+    if (S.reorder) return;
+    editEntry(el.dataset.uid);
+  },
   setCost: (el) => {
     const e = entryOf(el);
     e.cost = +el.dataset.v;
@@ -1645,6 +1680,11 @@ const A = {
     touch(curList());
     rerenderTopSheet();
   },
+  toggleReorder: () => {
+    S.reorder = !S.reorder;
+    rerender();
+  },
+  moveItem: (el) => moveItem(el.dataset.uid, +el.dataset.d),
   entryTab: (el) => {
     entryTab = el.dataset.v;
     rerenderTopSheet();
