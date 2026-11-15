@@ -257,6 +257,15 @@ function validate(l, f) {
   const dp = listDp(l, f);
   if (!l.detachments.length) out.push({ level: 'warn', msg: 'No detachment chosen.' });
   if (dp > L.dp) out.push({ level: 'error', msg: `Detachments cost ${dp} DP — limit is ${L.dp}.` });
+  const tagSeen = new Map();
+  for (const id of l.detachments) {
+    const d = f.detById.get(id);
+    for (const t of d?.tags || []) {
+      if (tagSeen.has(t)) out.push({ level: 'error', msg: `${tagSeen.get(t)} and ${d.n} both have the ${t} tag — they can't be combined.` });
+      else tagSeen.set(t, d.n);
+    }
+    for (const x of d?.restrict || []) if (!/ tag /i.test(x)) out.push({ level: 'warn', msg: `${d.n}: ${x}` });
+  }
   const disp = dispositionsOf(l, f);
   if (l.detachments.length && !l.disposition) out.push({ level: 'warn', msg: 'No Force Disposition chosen.' });
   else if (l.disposition && !disp.includes(l.disposition)) out.push({ level: 'warn', msg: `${l.disposition} isn't granted by your detachments.` });
@@ -837,10 +846,12 @@ function pickDetachments() {
           const enh = f.enhancements.filter((e) => e.det === d.id);
           const nStr = f.stratagems.filter((s) => s.det === d.id).length;
           const isOpen = open === d.id;
-          return `<div class="det-opt ${on ? 'on' : ''}"><div class="row gap">
+          const clash = !on && (d.tags || []).some((t) => l.detachments.some((id) => id !== d.id && (f.detById.get(id)?.tags || []).includes(t)));
+          return `<div class="det-opt ${on ? 'on' : ''} ${clash ? 'clash' : ''}"><div class="row gap">
             <button class="grow det-name" data-act="detOpen" data-id="${d.id}"><div>${esc(d.n)} <span class="muted">${isOpen ? '▾' : '▸'}</span></div><div class="muted small">${esc(d.fd.join(' · ') || '—')} · ${plural(nStr, 'stratagem')}</div></button>
             <span class="tag">${d.dp} DP</span>
             <button class="btn small ${on ? 'primary' : 'ghost'}" data-act="detToggle" data-id="${d.id}">${on ? '✓ In' : 'Add'}</button></div>
+            ${(d.tags || []).length || (d.restrict || []).length ? `<div class="det-tags">${(d.tags || []).map((t) => `<span class="tag tagd">${esc(t)}</span>`).join('')}${clash ? '<span class="warn small">Can’t combine — you already have a detachment with this tag</span>' : ''}${(d.restrict || []).filter((x) => !/ tag /i.test(x)).map((x) => `<div class="muted small">⚠ ${esc(x)}</div>`).join('')}</div>` : ''}
             ${isOpen ? `<div class="det-rules">${d.rules.map((r) => `<div class="rule"><b>${esc(r.n)}</b><div>${rich(r.d)}</div></div>`).join('') || '<p class="muted small">No rule text.</p>'}
               ${enh.length ? `<div class="muted small">Enhancements</div>${enh.map((e) => `<div class="rule"><b>${esc(e.n)}</b> <span class="pts">${e.pts} pts</span>${e.up ? ' <span class="tag">upgrade</span>' : ''}<div>${rich(e.d)}</div></div>`).join('')}` : ''}</div>` : ''}
           </div>`;
@@ -1012,7 +1023,7 @@ function editEntry(entryUid) {
         <div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { build: true })}</div>`;
       const ws = wargearSummary(e, u, l);
       const en = e.enh && f.enhById.get(e.enh);
-      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true, attached: l.units.filter((x) => x.attachTo === e.uid).map((x) => f.unitById.get(x.unitId)).filter(Boolean) })}</div>`;
+      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true, mods: enhMods(en), attached: l.units.filter((x) => x.attachTo === e.uid).map((x) => f.unitById.get(x.unitId)).filter(Boolean) })}</div>`;
       return `${head(e.name)}<div class="sheet-body">
         <div class="row"><div class="big-pts grow">${entryPts(e, f, l)} <span>pts</span></div>${e.warlord ? '<span class="tag big">♛ Warlord</span>' : ''}</div>
         ${co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
@@ -1052,6 +1063,70 @@ function wargearHtml(e, u, wg, models) {
     .join('')}`;
 }
 
+// ---- Enhancements that change the bearer's profile (best-effort reading of the rule text)
+const CHAR = { attacks: 'A', strength: 'S', damage: 'D', 'armour penetration': 'AP', ap: 'AP', move: 'M', toughness: 'T', wounds: 'W', 'objective control': 'OC', oc: 'OC', leadership: 'Ld', save: 'Sv' };
+function enhMods(en) {
+  if (!en) return null;
+  const full = plain(en.d).replace(/[’]/g, "'");
+  // only permanent effects change the profile: skip sentences that depend on a trigger or timing
+  const COND = /\b(while|until|if|each time|once per|when|after|at the start|at the end)\b/i;
+  const sentences = full.split(/(?<=[.!])\s+/);
+  const t = sentences.filter((x) => !COND.test(x)).join(' ');
+  const mods = { name: en.n, w: { melee: {}, ranged: {} }, kw: { melee: [], ranged: [] }, stat: {}, inv: '', invCond: '' };
+  let any = false;
+  const kinds = (k) => (k ? [k.trim().toLowerCase()] : ['melee', 'ranged']);
+  for (const m of t.matchAll(/add (\d+) to the ([a-z ,]+?) characteristics? of (?:the bearer's |weapons equipped by the bearer|the bearer's )?\s*(melee |ranged )?weapons?/gi)) {
+    for (const c of m[2].split(/,\s*|\s+and\s+/)) {
+      const key = CHAR[c.trim().toLowerCase()];
+      if (!key) continue;
+      for (const k of kinds(m[3])) mods.w[k][key] = (mods.w[k][key] || 0) + +m[1];
+      any = true;
+    }
+  }
+  for (const m of t.matchAll(/improve the armour penetration characteristic of (?:the bearer's |weapons equipped by the bearer)?\s*(melee |ranged )?weapons? by (\d+)/gi)) {
+    for (const k of kinds(m[1])) mods.w[k].AP = (mods.w[k].AP || 0) + +m[2];
+    any = true;
+  }
+  for (const m of t.matchAll(/(?:the bearer's|weapons equipped by the bearer)\s*(melee |ranged )?weapons? have (?:the )?((?:\[[^\]]+\](?:,\s*|\s+and\s+)?)+)/gi)) {
+    for (const kw of m[2].match(/\[[^\]]+\]/g) || []) for (const k of kinds(m[1])) mods.kw[k].push(kw.replace(/[\[\]]/g, ''));
+    any = true;
+  }
+  for (const m of t.matchAll(/add (\d+) to (?:the bearer's ([a-z ]+?) characteristic|the ([a-z ]+?) characteristic of the bearer)/gi)) {
+    const key = CHAR[(m[2] || m[3] || '').trim().toLowerCase()];
+    if (key && !['A', 'S', 'D', 'AP'].includes(key)) {
+      mods.stat[key] = (mods.stat[key] || 0) + +m[1];
+      any = true;
+    }
+  }
+  const inv = /bearer has a (\d)\+ invulnerable save/i.exec(t);
+  if (inv) {
+    mods.inv = inv[1] + '+';
+    any = true;
+  } else {
+    const ci = sentences.find((x) => /bearer has a (\d)\+ invulnerable save/i.test(x));
+    if (ci) {
+      mods.inv = /(\d)\+ invulnerable/i.exec(ci)[1] + '+';
+      mods.invCond = ci;
+      any = true;
+    }
+  }
+  return any ? mods : null;
+}
+// "3" + 1 = "4"; "D6" + 1 = "D6+1"; AP "-1" improved by 1 = "-2"; Move 5" + 1 = 6"
+function bump(v, n, key) {
+  const str = String(v ?? '');
+  if (!n) return str;
+  if (key === 'AP') {
+    const x = parseInt(str, 10) || 0;
+    return String(x - n);
+  }
+  let m = /^(\d+)(\D*)$/.exec(str);
+  if (m) return `${+m[1] + n}${m[2]}`;
+  m = /^(D\d+)(?:\+(\d+))?$/i.exec(str);
+  if (m) return `${m[1]}+${(+m[2] || 0) + n}`;
+  return str;
+}
+
 // Invulnerable saves: the unit's own (solid shield) and ones that depend on something —
 // wargear, an ability's condition, or an attached character (dashed shield with ★)
 const INV_RE = /(?:(\d)\+\s*invulnerable save|invulnerable save of (\d)\+)/i;
@@ -1069,8 +1144,9 @@ function abilityInvs(u, f, from) {
   }
   return out;
 }
-function invStrip(u, f, attached) {
+function invStrip(u, f, attached, em) {
   const list = [];
+  if (em && em.inv) list.push({ v: em.inv, cond: !!em.invCond, src: `${em.name} ✦`, note: em.invCond || '' });
   for (const m of u.m) {
     if (!m.inv) continue;
     const cond = !!plain(m.invd).trim();
@@ -1143,7 +1219,14 @@ function datasheet(u, f, counts, opts = {}) {
     return { n: (r?.n || a.n || '') + (a.p ? ` ${a.p}` : ''), d: r?.d || a.d || '' };
   };
   const chipList = (list) => list.map((a) => named(a)).map((a) => `<details class="rc"><summary>${esc(a.n)}</summary><div>${rich(a.d) || '<span class="muted">—</span>'}</div></details>`).join('');
-  const wrow = (w) => `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${w.k ? `<div class="wkw">${plain(w.k).split(/,\s*/).filter(Boolean).map((t) => `<button class="wkw-b" data-act="wkw" data-k="${esc(t.trim())}">${esc(t.trim())}</button>`).join('')}</div>` : ''}</td><td>${esc(w.r)}</td><td>${esc(w.A)}</td><td>${esc(w.s)}</td><td>${esc(w.S)}</td><td>${esc(w.AP)}</td><td>${esc(w.D)}</td></tr>`;
+  const em = opts.mods;
+  const wrow = (w) => {
+    const wm = em ? em.w[w.t] || {} : {};
+    const extraKw = em ? em.kw[w.t] || [] : [];
+    const cell = (k, v) => (wm[k] ? `<td class="mod">${esc(bump(v, wm[k], k))}<sup>✦</sup></td>` : `<td>${esc(v)}</td>`);
+    const kws = [...plain(w.k).split(/,\s*/).filter(Boolean).map((x) => [x.trim(), false]), ...extraKw.map((x) => [x, true])];
+    return `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${kws.length ? `<div class="wkw">${kws.map(([x, isMod]) => `<button class="wkw-b ${isMod ? 'mod' : ''}" data-act="wkw" data-k="${esc(x)}">${esc(x)}${isMod ? ' ✦' : ''}</button>`).join('')}</div>` : ''}</td><td>${esc(w.r)}</td>${cell('A', w.A)}<td>${esc(w.s)}</td>${cell('S', w.S)}${cell('AP', w.AP)}${cell('D', w.D)}</tr>`;
+  };
   const wt = (kind) => {
     const ws = u.w.filter((w) => w.t === kind);
     if (!ws.length) return '';
@@ -1159,8 +1242,9 @@ function datasheet(u, f, counts, opts = {}) {
   const ledBy = u.ledBy.map((id) => f.unitById.get(id)?.n).filter(Boolean);
   return `<div class="ds-kw">${u.kw.map((k) => `<span class="kwchip">${esc(k)}</span>`).join('')}</div>
   <table class="stats"><thead><tr><th></th><th>M</th><th>T</th><th>SV</th><th>W</th><th>LD</th><th>OC</th></tr></thead><tbody>
-  ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => `<td>${esc(m[k] || '-')}</td>`).join('')}</tr>`).join('')}</tbody></table>
-  ${invStrip(u, f, opts.attached || [])}
+  ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => (opts.mods && opts.mods.stat[k] ? `<td class="mod">${esc(bump(m[k], opts.mods.stat[k], k))}<sup>✦</sup></td>` : `<td>${esc(m[k] || '-')}</td>`)).join('')}</tr>`).join('')}
+  ${opts.mods ? `<p class="small modnote">✦ Changed by ${esc(opts.mods.name)}</p>` : ''}</tbody></table>
+  ${invStrip(u, f, opts.attached || [], opts.mods)}
   ${wt('ranged')}${wt('melee')}
   ${ab('Core').length ? `<h3 class="ds-h core">Core</h3><div class="rulechips">${chipList(ab('Core'))}</div>` : ''}
   ${ab('Faction').length ? `<h3 class="ds-h fac">Faction</h3><div class="rulechips">${chipList(ab('Faction'))}</div>` : ''}
@@ -1400,6 +1484,7 @@ function viewBattle() {
         <div class="pc-links">${p.listId ? `<button class="link" data-act="openPlayerList" data-i="${i}">Army</button>` : ''}<button class="link" data-act="playerStrats" data-i="${i}">Stratagems</button></div>
       </div>`)
       .join('')}</div>
+    ${trackersHtml(g)}
     <div class="row gap"><button class="btn ghost grow" data-act="cpBoth">+1 CP each</button>${r < 5 ? `<button class="btn primary grow" data-act="nextRound">Next round ›</button>` : `<button class="btn primary grow" data-act="endGame">Finish game</button>`}</div>
     ${g.log && g.log.length ? `<h3 class="sec">CP spent</h3><ul class="cplog">${g.log.slice(-8).reverse().map((x) => `<li><span class="muted">R${x.r}</span> ${esc(g.players[x.p].name)}: ${esc(x.n)} <b>−${x.cp}</b></li>`).join('')}</ul>` : ''}
     <h3 class="sec">Scoreboard</h3>
@@ -1495,6 +1580,59 @@ function startGame() {
 function gameSummary(g) {
   const t = g.players.map((p) => totals(p, g.caps));
   return [`${g.mission || 'Battle'} — ${fmtDate(new Date(g.created).toISOString())}`, g.deployment ? `Deployment: ${g.deployment}${g.twist ? ' · Twist: ' + g.twist : ''}` : '', ...g.players.map((p, i) => `${p.name}${p.faction ? ' (' + p.faction + ')' : ''}${p.pm ? ' [' + p.pm + ']' : ''}: ${t[i].total} VP (Primary ${t[i].pri}, Secondary ${t[i].sec}${p.battleReady ? ', Battle ready ' + t[i].br : ''})`), '', 'Round by round (Pri/Sec):', ...[0, 1, 2, 3, 4].map((k) => `R${k + 1}: ${g.players.map((p) => `${p.primary[k] || 0}/${p.secondary[k] || 0}`).join('  vs  ')}`)].join('\n');
+}
+
+// ---------------------------------------------------------------- Faction trackers
+// Resources named in a player's army rule and detachment rules, e.g. Yield points (YP), Flux tokens, Fate dice.
+function trackerSources(p) {
+  const l = S.lists.find((x) => x.id === p.listId);
+  const f = factions.get(l?.factionId || p.factionId);
+  if (!f) return { text: '', f: null };
+  const parts = f.armyRules.map((r) => r.d);
+  const dets = l ? l.detachments : f.detachments.map((d) => d.id);
+  for (const id of dets) parts.push(...(f.detById.get(id)?.rules || []).map((r) => r.d));
+  return { text: plain(parts.join(' ')), f };
+}
+function detectTrackers(p) {
+  const { text } = trackerSources(p);
+  const found = new Map();
+  for (const m of text.matchAll(/\b([A-Z][a-z’']+(?: [A-Z][a-z’']+)?) (points?|tokens?|dice|counters?)\b(?:\s*\(([A-Z]{1,4})\))?/g)) {
+    const name = `${m[1]} ${m[2].replace(/s$/, '')}${m[2].endsWith('dice') ? '' : 's'}`.replace(/dices$/, 'dice');
+    if (/^(Detachment|Victory|Command|Battle|Wound|Damage|Hit|Save|Objective|Leadership)\b/.test(m[1])) continue;
+    const key = name.toLowerCase();
+    if (!found.has(key)) found.set(key, { name, abbr: m[3] || '' });
+  }
+  return [...found.values()].slice(0, 4);
+}
+// Votann: which Prioritised Efficiency ability is active
+function thresholdNote(p, tr, v) {
+  const { text } = trackerSources(p);
+  if (tr.abbr && /Hostile Acquisition/.test(text) && /Fortify Takeover/.test(text)) {
+    const m = new RegExp(`(\\d+)\\s*${tr.abbr} or more`).exec(text);
+    const n = m ? +m[1] : 7;
+    return v >= n ? `Fortify Takeover from your next Command phase (${n}+ ${tr.abbr})` : `Hostile Acquisition (under ${n} ${tr.abbr})`;
+  }
+  return '';
+}
+function trackersHtml(g) {
+  const blocks = g.players.map((p, i) => {
+    p.trackers ||= {};
+    const auto = detectTrackers(p);
+    const names = [...new Set([...auto.map((t) => t.name), ...Object.keys(p.trackers)])];
+    if (!names.length && !p.listId && !p.factionId) return '';
+    return `<div class="trk"><div class="trk-h"><b>${esc(p.name)}</b><button class="link small" data-act="addTracker" data-i="${i}">＋ counter</button></div>
+      ${names
+        .map((n) => {
+          const tr = auto.find((t) => t.name === n) || { name: n, abbr: '' };
+          const v = p.trackers[n] || 0;
+          const note = thresholdNote(p, tr, v);
+          return `<div class="trk-row"><span class="grow">${esc(n)}${tr.abbr ? ` (${esc(tr.abbr)})` : ''}${note ? `<div class="small trk-note">${esc(note)}</div>` : ''}</span>
+            <button class="st-b sm" data-act="trkStep" data-i="${i}" data-n="${esc(n)}" data-d="-1">−</button><b class="wn-n">${v}</b><button class="st-b sm" data-act="trkStep" data-i="${i}" data-n="${esc(n)}" data-d="1">+</button></div>`;
+        })
+        .join('') || '<p class="muted small">No faction resources found — add a counter if you need one.</p>'}</div>`;
+  });
+  if (!blocks.some(Boolean)) return '';
+  return `<h3 class="sec">Faction trackers</h3><div class="trk-wrap">${blocks.join('')}</div>`;
 }
 
 // ---------------------------------------------------------------- Missions
@@ -1957,6 +2095,23 @@ const A = {
     S.pickOwned = el.checked;
     const l = curList();
     $('#pickResults').innerHTML = pickerResults(factions.get(l.factionId), l);
+  },
+  trkStep: (el) => {
+    const p = activeGame().players[+el.dataset.i];
+    p.trackers ||= {};
+    p.trackers[el.dataset.n] = Math.max(0, (p.trackers[el.dataset.n] || 0) + +el.dataset.d);
+    save('games');
+    rerender();
+  },
+  addTracker: async (el) => {
+    const p = activeGame().players[+el.dataset.i];
+    const v = await promptBox('New counter', '', { placeholder: 'e.g. Miracle dice, Blood tithe', ok: 'Add' });
+    if (v && v.trim()) {
+      p.trackers ||= {};
+      p.trackers[v.trim()] ??= 0;
+      save('games');
+      rerender();
+    }
   },
   toggleReorder: () => {
     S.reorder = !S.reorder;
@@ -2468,4 +2623,4 @@ boot().catch((e) => {
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
-window.__muster = { S, factions, validate, listPts, listDp, encodeList, decodeList };
+window.__muster = { enhMods, detectTrackers, S, factions, validate, listPts, listDp, encodeList, decodeList };

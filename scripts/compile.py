@@ -41,6 +41,7 @@ def num(s):
 
 
 HEADERS = collections.Counter()
+TAGS = collections.Counter()
 
 
 def plain_text(h):
@@ -207,10 +208,16 @@ for fac in factions:
     for d in detachments:
         if d['faction_id'] != fid or d['id'] in BA:
             continue
+        rules = [{'n': a['name'], 'd': a['description']} for a in detab if a['detachment_id'] == d['id']]
+        txt = plain_text(' '.join(r['d'] for r in rules))
+        # "This detachment has the ACROBATIC tag and cannot be taken with another ACROBATIC detachment."
+        tags = sorted({t.strip().upper() for t in re.findall(r'has the\s+([A-Z][A-Z \-’\']+?)\s+tag', txt)})
+        TAGS.update(tags)
+        restrict = [x.strip() for x in re.split(r'(?<=[.!])\s+', txt) if re.search(r'cannot include|must include|cannot be taken|cannot be included|only include', x, re.I)]
         dets.append({
             'id': d['id'], 'n': d['name'], 'dp': num(d['dp']),
             'fd': [x.strip() for x in (d['force_disposition'] or '').split(',') if x.strip()],
-            'rules': [{'n': a['name'], 'd': a['description']} for a in detab if a['detachment_id'] == d['id']],
+            'rules': rules, 'tags': tags, 'restrict': restrict,
         })
     fac_enh = [{
         'id': e['id'], 'n': e['name'], 'pts': num(e['cost']), 'det': e['detachment_id'], 'dn': e['detachment'],
@@ -252,6 +259,7 @@ with open(f'{D}/index.json', 'w', encoding='utf-8') as fh:
         'factions': sorted(index, key=lambda f: f['n']),
     }, fh, ensure_ascii=False, indent=1)
 print('Cost headers:', HEADERS.most_common(15))
+print('Detachment tags:', TAGS.most_common(30))
 print('Sources:', sorted({(s['name'], s['type'], s['edition']) for s in sources.values()}))
 # publish only compiled JSON
 for f in os.listdir(D):

@@ -414,3 +414,17 @@ details.others summary { cursor: pointer; padding: 4px 0; }
 .rule li { margin: 2px 0; }
 .kwd, .rule .kwd, .st-body .kwd { font-variant: normal; text-transform: uppercase; font-size: .86em; font-weight: 750; letter-spacing: .03em; }
 .chip.short { border-color: rgba(226,168,66,.6); color: var(--amber); }
+
+/* detachment tags, trackers, enhancement changes */
+.det-opt.clash { opacity: .6; }
+.det-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.tag.tagd { color: #b98fd6; border-color: rgba(185,143,214,.45); }
+.trk-wrap { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 12px; }
+.trk { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.trk-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.trk-row { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; font-weight: 650; }
+.trk-note { color: var(--accent); font-weight: 600; margin-top: 2px; }
+td.mod, .stats td.mod { color: var(--green); font-weight: 800; }
+td.mod sup, .stats td.mod sup { font-size: 9px; color: var(--accent); }
+.wkw-b.mod { color: var(--green); border-color: rgba(116,194,122,.5); }
+.modnote { color: var(--green); margin: 4px 0; }
