@@ -27,6 +27,18 @@ jobs:
       - name: Fetch Wahapedia data export
         timeout-minutes: 15
         run: bash scripts/fetch-data.sh
+      - name: Dev sample (temporary)
+        run: |
+          python3 - <<'PY'
+          import csv
+          csv.field_size_limit(10**9)
+          rows = list(csv.DictReader(open('site/data/Abilities.csv', encoding='utf-8-sig'), delimiter='|', quoting=csv.QUOTE_NONE))
+          core = [r for r in rows if not r.get('faction_id')]
+          print('ABCOUNT', len(rows), 'core', len(core))
+          for r in core: print('AB', r['id'], '|', r['name'], '|', (r.get('description') or '')[:160].replace('\n',' '))
+          ws = list(csv.DictReader(open('site/data/Datasheets_wargear.csv', encoding='utf-8-sig'), delimiter='|', quoting=csv.QUOTE_NONE))
+          for r in [w for w in ws if 'blast' in (w.get('description') or '').lower()][:3]: print('WG', r['description'][:600])
+          PY
       - name: Compile data for the app
         run: python3 scripts/compile.py
       - name: Compile missions
