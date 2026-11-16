@@ -52,7 +52,8 @@ def main():
         if name and (name not in actions or len(body) > len(actions[name])):
             actions[name] = body
     # Whole core rules as a searchable reference: every numbered heading with the text under it
-    end_cut = min([i for i in (h.find('tooltip_templates'), h.find('<footer')) if i > 0] or [len(h)])
+    tt = h.find('<div class="tooltip_templates"')
+    end_cut = tt if tt > 0 else len(h)
     body_h = h[:end_cut]
     marks = []
     for m in re.finditer(r'<h1[^>]*>(.*?)</h1>', body_h, re.S):
