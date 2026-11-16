@@ -429,3 +429,5 @@ td.mod sup, .stats td.mod sup { font-size: 9px; color: var(--accent); }
 .wkw-b.mod { color: var(--green); border-color: rgba(116,194,122,.5); }
 .modnote { color: var(--green); margin: 4px 0; }
 .draw-btn { margin-top: 8px; min-height: 36px; }
+.strat-fold { padding: 8px 8px 0; } .strat-fold .strat { margin-bottom: 8px; }
+.core-div { font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 4px 2px 6px; border-top: 1px solid var(--line); padding-top: 8px; }

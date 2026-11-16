@@ -1446,23 +1446,37 @@ async function hydrateStrats() {
   };
   filtered.sort((a, b) => order(a) - order(b) || (a.isCore ? 1 : 0) - (b.isCore ? 1 : 0) || a.n.localeCompare(b.n));
   const g = activeGame();
-  let lastGroup = null;
-  el.innerHTML = filtered
-    .map((s) => {
-      const grp = order(s) === 5 ? 'Any phase' : PHASES[order(s)]?.label + ' phase';
-      const hdr = grp !== lastGroup ? `<h3 class="sec">${esc(grp)}</h3>` : '';
-      lastGroup = grp;
-      const open = st.open[s.id];
-      const tk = turnKey(s.turn);
-      return `${hdr}<div class="strat ${s.isCore ? 'core' : ''} ${open ? 'open' : ''}">
+  // folding sections per phase (open automatically when filtering by phase or searching)
+  st.fold ||= {};
+  const groups = [];
+  for (const s of filtered) {
+    const grp = order(s) === 5 ? 'Any phase' : PHASES[order(s)]?.label + ' phase';
+    if (!groups.length || groups[groups.length - 1].name !== grp) groups.push({ name: grp, items: [] });
+    groups[groups.length - 1].items.push(s);
+  }
+  const auto = !!(st.phase || st.q || groups.length === 1);
+  const card = (s) => {
+    const open = st.open[s.id];
+    const tk = turnKey(s.turn);
+    return `<div class="strat ${s.isCore ? 'core' : ''} ${open ? 'open' : ''}">
         <button class="st-head" data-act="stToggle" data-id="${esc(s.id)}">
           <div class="st-main"><div class="st-name">${esc(s.n)}</div><div class="st-type">${esc(s.isCore ? s.type || 'Core' : s.dn || s.type)}</div>
           <div class="st-when"><span class="turn ${tk}">${esc(s.turn || '—')}</span> · ${esc(s.ph || '')}</div></div>
           <div class="cp">${esc(s.cp || '–')}<span>CP</span></div></button>
         ${open ? `<div class="st-body">${rich(s.d)}${g && s.cp !== '' ? `<button class="btn small primary mt" data-act="stUse" data-cp="${esc(s.cp)}" data-n="${esc(s.n)}">Use (−${esc(s.cp)} CP)</button>` : ''}</div>` : ''}
       </div>`;
-    })
-    .join('');
+  };
+  const anyOpen = groups.some((gr) => (auto ? st.fold[gr.name] !== false : st.fold[gr.name] === true));
+  el.innerHTML =
+    (groups.length > 1 ? `<div class="row"><span class="grow muted small">${filtered.length} stratagems</span><button class="link small" data-act="stFoldAll" data-v="${anyOpen ? 'close' : 'open'}">${anyOpen ? 'Collapse all' : 'Expand all'}</button></div>` : '') +
+    groups
+      .map((gr) => {
+        const open = auto ? st.fold[gr.name] !== false : st.fold[gr.name] === true;
+        const core = gr.items.filter((x) => x.isCore).length;
+        return `<div class="fold ${open ? 'open' : ''}"><button class="fold-h" data-act="stFold" data-k="${esc(gr.name)}" data-auto="${auto ? 1 : 0}"><span>${esc(gr.name)}</span><span class="muted">${gr.items.length - core}${core ? ` + ${core} core` : ''} ${open ? '▾' : '▸'}</span></button>
+          ${open ? `<div class="fold-b strat-fold">${gr.items.map((x, i) => (x.isCore && (i === 0 || !gr.items[i - 1].isCore) ? '<div class="core-div">Core</div>' : '') + card(x)).join('')}</div>` : ''}</div>`;
+      })
+      .join('');
 }
 
 async function oppPickSheet() {
@@ -2186,6 +2200,7 @@ const A = {
   },
   stPhase: (el) => {
     S.strat.phase = el.dataset.v;
+    S.strat.fold = {};
     rerender();
   },
   stTurn: (el) => {
@@ -2207,6 +2222,23 @@ const A = {
     hydrateStrats();
   },
   stOppPick: () => oppPickSheet(),
+  stFold: (el) => {
+    const k = el.dataset.k;
+    const st = S.strat;
+    st.fold ||= {};
+    const auto = el.dataset.auto === '1';
+    const open = auto ? st.fold[k] !== false : st.fold[k] === true;
+    st.fold[k] = !open;
+    keepScroll = true;
+    hydrateStrats();
+  },
+  stFoldAll: (el) => {
+    const st = S.strat;
+    st.fold = {};
+    const names = [...document.querySelectorAll('[data-act=stFold]')].map((b) => b.dataset.k);
+    for (const n of names) st.fold[n] = el.dataset.v === 'open';
+    hydrateStrats();
+  },
   oppDet: (el) => {
     const st = S.strat;
     const id = el.dataset.id;
