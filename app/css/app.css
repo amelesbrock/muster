@@ -436,3 +436,10 @@ td.mod sup, .stats td.mod sup { font-size: 9px; color: var(--accent); }
 .ritem-h { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 10px 0; font-weight: 650; text-align: left; }
 .ritem.lvl3 .ritem-h { padding-left: 14px; font-weight: 550; font-size: 14px; }
 .ritem .rule { margin-top: 0; }
+.enh-wrap { border-radius: 10px; border: 1px solid var(--line); background: var(--surface2); }
+.enh-wrap.on { border-color: var(--accent); background: rgba(201,161,74,.12); }
+.enh-wrap.taken { opacity: .55; }
+.enh-row { display: flex; align-items: stretch; }
+.enh-pick { flex: 1; display: flex; justify-content: space-between; gap: 10px; padding: 11px 12px; text-align: left; background: none; border: 0; color: inherit; font: inherit; }
+.enh-i { min-width: 44px; border: 0; border-left: 1px solid var(--line); background: none; color: var(--accent); font-size: 1.05em; }
+.enh-d { padding: 2px 12px 10px; font-size: .92em; line-height: 1.45; }

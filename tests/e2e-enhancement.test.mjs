@@ -1,0 +1,23 @@
+// Enhancement picker shows the rule text; Contraband Munitions bumps the Kelermorph ranged S on the datasheet
+import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome' });
+const p = await (await b.newContext({ viewport:{width:390,height:844}, isMobile:true, hasTouch:true })).newPage();
+const errs=[]; p.on('pageerror',e=>errs.push(e.message));
+await p.goto('http://localhost:8765/'); await p.waitForTimeout(800);
+await p.locator('[data-act=newList]').click(); await p.waitForTimeout(300);
+await p.fill('#nlName','GSC'); await p.locator('[data-act=nlFaction][data-id=GC]').click(); await p.locator('[data-act=nlCreate]').click(); await p.waitForTimeout(800);
+const dn = await p.evaluate(() => { const m=window.__muster; const l=m.S.lists.at(-1); const f=m.factions.get('GC');
+  const en=f.enhancements.find(e=>e.n==='Contraband Munitions'); l.detachments=[en.det]; const d=f.detachments.find(x=>x.id===en.det); l.disposition=d.fd?.[0];
+  l.units.push({uid:'k',unitId:f.units.find(u=>u.n==='Kelermorph').id,name:'Kelermorph',cost:0,wg:{}}); return d.n; });
+await p.locator('[data-act=tab][data-tab=battle]').click(); await p.waitForTimeout(200); await p.locator('[data-act=tab][data-tab=army]').click(); await p.waitForTimeout(400);
+await p.locator('.entry').first().click(); await p.waitForTimeout(400);
+await p.locator('[data-act=entryTab][data-v=opts]').click(); await p.waitForTimeout(300);
+const n = await p.locator('.enh-wrap').count();
+await p.locator('.enh-wrap:has-text("Contraband") [data-act=enhInfo]').click(); await p.waitForTimeout(300);
+console.log('det', dn, 'enh rows', n, 'info:', (await p.locator('.enh-d').first().innerText()).replace(/\n/g,' '));
+await p.screenshot({path:'/tmp/k1.png'});
+await p.locator('.enh-wrap:has-text("Contraband") [data-act=setEnh]').click(); await p.waitForTimeout(300);
+await p.locator('[data-act=entryTab][data-v=sheet]').click(); await p.waitForTimeout(300);
+console.log('ranged row:', (await p.locator('.wtab tbody tr').first().innerText()).replace(/\s+/g,' '));
+await p.screenshot({path:'/tmp/k2.png'});
+console.log('errors', errs); await b.close();

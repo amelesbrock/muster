@@ -1001,6 +1001,7 @@ function eligibleEnh(u, l, f) {
   return f.enhancements.filter((x) => l.detachments.includes(x.det) && (u.enh.length ? u.enh.includes(x.id) : u.character && !x.up));
 }
 let entryTab = 'sheet';
+const ENHI = new Set(); // enhancements whose rules are expanded in the picker
 function editEntry(entryUid) {
   entryTab = 'sheet';
   const l = curList();
@@ -1040,7 +1041,11 @@ function editEntry(entryUid) {
         ${u.leads.length ? `<label class="lbl">${u.sup ? 'Support — joins a unit even if it has a Leader' : 'Leading'}</label>
           ${hosts.length ? `<div class="enh-list"><button class="enh ${e.attachTo ? '' : 'on'}" data-act="setAttach" data-uid="${e.uid}" data-v="">Not attached</button>${hosts.map((h) => `<button class="enh ${e.attachTo === h.uid ? 'on' : ''}" data-act="setAttach" data-uid="${e.uid}" data-v="${h.uid}"><span>${esc(h.name)}</span>${hostInfo(h)}</button>`).join('')}</div>` : `<p class="muted small">Can join: ${esc(u.leads.map((id) => f.unitById.get(id)?.n).filter(Boolean).join(', ') || '—')}.</p>`}` : ''}
         ${enhs.length || e.enh ? `<label class="lbl">Enhancement</label><div class="enh-list"><button class="enh ${e.enh ? '' : 'on'}" data-act="setEnh" data-uid="${e.uid}" data-v="">None</button>
-          ${enhs.map((x) => `<button class="enh ${e.enh === x.id ? 'on' : ''} ${taken.has(x.id) ? 'taken' : ''}" data-act="setEnh" data-uid="${e.uid}" data-v="${x.id}"><span>${esc(x.n)}<span class="muted small"> · ${esc(x.dn)}${taken.has(x.id) ? ' · taken' : ''}</span></span><span class="pts">+${x.pts}</span></button>`).join('')}</div>`
+          ${enhs.map((x) => {
+            const open = ENHI.has(x.id) || e.enh === x.id;
+            const fx = enhMods(x);
+            return `<div class="enh-wrap ${e.enh === x.id ? 'on' : ''} ${taken.has(x.id) ? 'taken' : ''}"><div class="enh-row"><button class="enh-pick" data-act="setEnh" data-uid="${e.uid}" data-v="${x.id}"><span>${e.enh === x.id ? '✓ ' : ''}${esc(x.n)}<span class="muted small"> · ${esc(x.dn)}${taken.has(x.id) ? ' · taken' : ''}</span></span><span class="pts">+${x.pts}</span></button><button class="enh-i ${open ? 'on' : ''}" data-act="enhInfo" data-v="${x.id}" aria-label="What it does">${open ? '▾' : 'ⓘ'}</button></div>${open ? `<div class="enh-d">${rich(x.d)}${fx ? `<p class="small modnote">✦ Shown on the datasheet: ${esc(fxSummary(fx))}</p>` : ''}</div>` : ''}</div>`;
+          }).join('')}</div>`
           : u.character && !u.epic && !l.detachments.length ? '<p class="muted small">Choose a detachment to see enhancements.</p>' : ''}
         ${wargearHtml(e, u, wg, models)}
         <details class="adv" ${e.ptsOverride != null && e.ptsOverride !== '' ? 'open' : ''}><summary>Points look wrong? Set them manually</summary>
@@ -1092,46 +1097,67 @@ function wargearHtml(e, u, wg, models) {
 }
 
 // ---- Enhancements that change the bearer's profile (best-effort reading of the rule text)
-const CHAR = { attacks: 'A', strength: 'S', damage: 'D', 'armour penetration': 'AP', ap: 'AP', move: 'M', toughness: 'T', wounds: 'W', 'objective control': 'OC', oc: 'OC', leadership: 'Ld', save: 'Sv' };
+const CHAR = { attacks: 'A', strength: 'S', damage: 'D', 'armour penetration': 'AP', ap: 'AP', move: 'M', toughness: 'T', wounds: 'W', 'objective control': 'OC', oc: 'OC', leadership: 'Ld', save: 'Sv', range: 'R', 'weapon skill': 'SK', 'ballistic skill': 'SK' };
+const SHORT = { a: 'A', s: 'S', d: 'D', ap: 'AP', r: 'R', bs: 'SK', ws: 'SK', m: 'M', t: 'T', w: 'W', oc: 'OC', ld: 'Ld', sv: 'Sv' };
+const WKEYS = ['A', 'S', 'D', 'AP', 'R', 'SK'];
+const listKeys = (str, map = CHAR) => str.split(/,\s*|\s+and\s+/).map((c) => map[c.trim().toLowerCase()]).filter(Boolean);
 function enhMods(en) {
   if (!en) return null;
-  const full = plain(en.d).replace(/[’]/g, "'");
+  let full = plain(en.d).replace(/[’]/g, "'").replace(/\s+/g, ' ');
+  // a menu of options ("select one of the abilities below") is chosen in game, so it never changes the printed profile
+  const menu = full.search(/select one of|one of the following|choose one/i);
+  if (menu >= 0) full = full.slice(0, menu);
   // only permanent effects change the profile: skip sentences that depend on a trigger or timing
-  const COND = /\b(while|until|if|each time|once per|when|after|at the start|at the end)\b/i;
-  const sentences = full.split(/(?<=[.!])\s+/);
+  const COND = /\b(while|until|if|each time|once per|when|after|at the start|at the end|instead|that weapon)\b/i;
+  const sentences = full.split(/(?<=[.!])\s*(?=[A-Z+\-\d])/);
   const t = sentences.filter((x) => !COND.test(x)).join(' ');
-  const mods = { name: en.n, w: { melee: {}, ranged: {} }, kw: { melee: [], ranged: [] }, stat: {}, inv: '', invCond: '' };
+  const mods = { name: en.n, w: { melee: {}, ranged: {}, psychic: {} }, kw: { melee: [], ranged: [], psychic: [] }, stat: {}, set: {}, inv: '', invCond: '' };
   let any = false;
   const kinds = (k) => (k ? [k.trim().toLowerCase()] : ['melee', 'ranged']);
-  for (const m of t.matchAll(/add (\d+) to the ([a-z ,]+?) characteristics? of (?:the bearer's |weapons equipped by the bearer|the bearer's )?\s*(melee |ranged )?weapons?/gi)) {
-    for (const c of m[2].split(/,\s*|\s+and\s+/)) {
-      const key = CHAR[c.trim().toLowerCase()];
-      if (!key) continue;
-      for (const k of kinds(m[3])) mods.w[k][key] = (mods.w[k][key] || 0) + +m[1];
-      any = true;
-    }
-  }
-  for (const m of t.matchAll(/improve the armour penetration characteristic of (?:the bearer's |weapons equipped by the bearer)?\s*(melee |ranged )?weapons? by (\d+)/gi)) {
-    for (const k of kinds(m[1])) mods.w[k].AP = (mods.w[k].AP || 0) + +m[2];
+  const addW = (k, key, n) => {
+    for (const kind of kinds(k)) mods.w[kind][key] = (mods.w[kind][key] || 0) + n;
+    any = true;
+  };
+  const addS = (key, n) => {
+    if (WKEYS.includes(key) && key !== 'R') return;
+    mods.stat[key] = (mods.stat[key] || 0) + n;
+    any = true;
+  };
+  const WHO = String.raw`(?:this unit's|this model's|the bearer's unit's|the bearer's|its)`;
+  // "Add 1 to the Attacks and Strength characteristics of the bearer's melee weapons"
+  for (const m of t.matchAll(/add (\d+)"? to the ([a-z ,]+?) characteristics? of (?:the bearer's |models in the bearer's unit's )?(melee |ranged |psychic )?weapons?/gi))
+    for (const key of listKeys(m[2])) addW(m[3], key, +m[1]);
+  // "Improve the Strength and Armour Penetration characteristics of melee weapons equipped by the bearer by 1"
+  for (const m of t.matchAll(/improve the ([a-z ,]+?) characteristics? of (?:the bearer's |models in the bearer's unit's )?(melee |ranged |psychic )?weapons?(?: equipped by [a-z' ]+?)? by (\d+)/gi))
+    for (const key of listKeys(m[1])) addW(m[2], key, +m[3]);
+  // 11th edition wording: "This unit's ranged attacks have +2 S." / "This model's melee attacks have: +1 S and AP."
+  for (const m of t.matchAll(new RegExp(WHO + String.raw`\s+(melee |ranged |psychic )?attacks have:?\s*((?:[+-]\d+"?\s*[A-Za-z]{1,2}\b(?:\s*(?:,|and)\s*[A-Za-z]{1,2}\b)*\s*)+)`, 'gi')))
+    for (const it of m[2].matchAll(/([+-]\d+)"?\s*([A-Za-z]{1,2}\b(?:\s*(?:,|and)\s*[A-Za-z]{1,2}\b)*)/g))
+      for (const key of listKeys(it[2], SHORT)) if (WKEYS.includes(key)) addW(m[1], key, +it[1]);
+  // weapon abilities: "the bearer's ranged weapons have the [ASSAULT] ability" / "This unit's attacks have [SUSTAINED HITS 1]"
+  for (const m of t.matchAll(new RegExp(WHO + String.raw`\s+(melee |ranged |psychic )?(?:weapons|attacks) have:?\s*(?:the )?((?:\[[^\]]+\](?:,\s*|\s+and\s+)?)+)`, 'gi'))) {
+    for (const kw of m[2].match(/\[[^\]]+\]/g) || []) for (const k of kinds(m[1])) mods.kw[k].push(kw.replace(/[\[\]]/g, '').toUpperCase());
     any = true;
   }
-  for (const m of t.matchAll(/(?:the bearer's|weapons equipped by the bearer)\s*(melee |ranged )?weapons? have (?:the )?((?:\[[^\]]+\](?:,\s*|\s+and\s+)?)+)/gi)) {
-    for (const kw of m[2].match(/\[[^\]]+\]/g) || []) for (const k of kinds(m[1])) mods.kw[k].push(kw.replace(/[\[\]]/g, ''));
+  // characteristics of the model: "Add 2 to the bearer's Wounds characteristic", "Add 1" to the Move characteristic of the bearer"
+  for (const m of t.matchAll(/add (\d+)"? to (?:the bearer's ([a-z ,]+?) characteristics?|the ([a-z ,]+?) characteristics? of (?:the bearer|models in the bearer's unit)\b)/gi))
+    for (const key of listKeys(m[2] || m[3] || '')) addS(key, +m[1]);
+  for (const m of t.matchAll(/improve (?:the bearer's ([a-z ,]+?) characteristics?|the ([a-z ,]+?) characteristics? of (?:the bearer|models in the bearer's unit)\b) by (\d+)/gi))
+    for (const key of listKeys(m[1] || m[2] || '')) addS(key, +m[3]);
+  // 11th edition: "This model has +2 W." / "This unit has: +1 T." / "This unit has +2" M."
+  for (const m of t.matchAll(/(?:this unit|this model|the bearer|the bearer's unit) has:?\s*((?:[+-]\d+"?\s*(?:M|T|W|OC|Ld|Sv)\b(?:\s*(?:,|and)\s*)?)+)/gi))
+    for (const it of m[1].matchAll(/([+-]\d+)"?\s*(M|T|W|OC|Ld|Sv)\b/gi)) addS(SHORT[it[2].toLowerCase()], +it[1]);
+  const sv = /(?:has a Save characteristic of|has:?\s*|^|\.\s*)(\d)\+ (?:Sv|Save)\b/i.exec(t);
+  if (sv) {
+    mods.set.Sv = sv[1] + '+';
     any = true;
   }
-  for (const m of t.matchAll(/add (\d+) to (?:the bearer's ([a-z ]+?) characteristic|the ([a-z ]+?) characteristic of the bearer)/gi)) {
-    const key = CHAR[(m[2] || m[3] || '').trim().toLowerCase()];
-    if (key && !['A', 'S', 'D', 'AP'].includes(key)) {
-      mods.stat[key] = (mods.stat[key] || 0) + +m[1];
-      any = true;
-    }
-  }
-  const inv = /bearer has a (\d)\+ invulnerable save/i.exec(t);
+  const inv = /(?:bearer|model|unit) has an? (\d)\+ invulnerable save(?! against)/i.exec(t);
   if (inv) {
     mods.inv = inv[1] + '+';
     any = true;
   } else {
-    const ci = sentences.find((x) => /bearer has a (\d)\+ invulnerable save/i.test(x));
+    const ci = sentences.find((x) => /has an? (\d)\+ invulnerable save/i.test(x) && /bearer|this model|this unit/i.test(x));
     if (ci) {
       mods.inv = /(\d)\+ invulnerable/i.exec(ci)[1] + '+';
       mods.invCond = ci;
@@ -1140,6 +1166,19 @@ function enhMods(en) {
   }
   return any ? mods : null;
 }
+const KEYNAME = { SK: 'BS/WS', R: 'Range' };
+function fxSummary(fx) {
+  const out = [];
+  for (const kind of ['ranged', 'melee', 'psychic']) {
+    const w = Object.entries(fx.w[kind]).map(([k, n]) => `${KEYNAME[k] || k} ${k === 'AP' || k === 'SK' ? 'improved by ' + n : '+' + n}`);
+    const kw = fx.kw[kind].map((x) => `[${x}]`);
+    if (w.length || kw.length) out.push(`${kind} ${[...w, ...kw].join(', ')}`);
+  }
+  const st = [...Object.entries(fx.stat).map(([k, n]) => `${k} ${['Ld', 'Sv'].includes(k) ? 'improved by ' + n : '+' + n}`), ...Object.entries(fx.set).map(([k, v]) => `${k} ${v}`)];
+  if (st.length) out.push(st.join(', '));
+  if (fx.inv) out.push(`${fx.inv} invulnerable save${fx.invCond ? ' (conditional)' : ''}`);
+  return out.join('; ');
+}
 // "3" + 1 = "4"; "D6" + 1 = "D6+1"; AP "-1" improved by 1 = "-2"; Move 5" + 1 = 6"
 function bump(v, n, key) {
   const str = String(v ?? '');
@@ -1147,6 +1186,10 @@ function bump(v, n, key) {
   if (key === 'AP') {
     const x = parseInt(str, 10) || 0;
     return String(x - n);
+  }
+  if (['SK', 'Ld', 'Sv'].includes(key)) {
+    const m0 = /^(\d+)\+$/.exec(str);
+    return m0 ? `${Math.max(2, +m0[1] - n)}+` : str;
   }
   let m = /^(\d+)(\D*)$/.exec(str);
   if (m) return `${+m[1] + n}${m[2]}`;
@@ -1250,11 +1293,13 @@ function datasheet(u, f, counts, opts = {}) {
   const chipList = (list) => list.map((a) => named(a)).map((a) => `<details class="rc"><summary>${esc(a.n)}</summary><div>${rich(a.d) || '<span class="muted">—</span>'}</div></details>`).join('');
   const em = opts.mods;
   const wrow = (w) => {
-    const wm = em ? em.w[w.t] || {} : {};
-    const extraKw = em ? em.kw[w.t] || [] : [];
+    const psy = /psychic/i.test(w.k || '');
+    const wm = em ? { ...(em.w[w.t] || {}) } : {};
+    if (em && psy) for (const [k, n] of Object.entries(em.w.psychic || {})) wm[k] = (wm[k] || 0) + n;
+    const extraKw = em ? [...(em.kw[w.t] || []), ...(psy ? em.kw.psychic || [] : [])] : [];
     const cell = (k, v) => (wm[k] ? `<td class="mod">${esc(bump(v, wm[k], k))}<sup>✦</sup></td>` : `<td>${esc(v)}</td>`);
     const kws = [...plain(w.k).split(/,\s*/).filter(Boolean).map((x) => [x.trim(), false]), ...extraKw.map((x) => [x, true])];
-    return `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${kws.length ? `<div class="wkw">${kws.map(([x, isMod]) => `<button class="wkw-b ${isMod ? 'mod' : ''}" data-act="wkw" data-k="${esc(x)}">${esc(x)}${isMod ? ' ✦' : ''}</button>`).join('')}</div>` : ''}</td><td>${esc(w.r)}</td>${cell('A', w.A)}<td>${esc(w.s)}</td>${cell('S', w.S)}${cell('AP', w.AP)}${cell('D', w.D)}</tr>`;
+    return `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${kws.length ? `<div class="wkw">${kws.map(([x, isMod]) => `<button class="wkw-b ${isMod ? 'mod' : ''}" data-act="wkw" data-k="${esc(x)}">${esc(x)}${isMod ? ' ✦' : ''}</button>`).join('')}</div>` : ''}</td>${cell('R', w.r)}${cell('A', w.A)}${cell('SK', w.s)}${cell('S', w.S)}${cell('AP', w.AP)}${cell('D', w.D)}</tr>`;
   };
   const wt = (kind) => {
     const ws = u.w.filter((w) => w.t === kind);
@@ -1271,7 +1316,7 @@ function datasheet(u, f, counts, opts = {}) {
   const ledBy = u.ledBy.map((id) => f.unitById.get(id)?.n).filter(Boolean);
   return `<div class="ds-kw">${u.kw.map((k) => `<span class="kwchip">${esc(k)}</span>`).join('')}</div>
   <table class="stats"><thead><tr><th></th><th>M</th><th>T</th><th>SV</th><th>W</th><th>LD</th><th>OC</th></tr></thead><tbody>
-  ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => (opts.mods && opts.mods.stat[k] ? `<td class="mod">${esc(bump(m[k], opts.mods.stat[k], k))}<sup>✦</sup></td>` : `<td>${esc(m[k] || '-')}</td>`)).join('')}</tr>`).join('')}
+  ${u.m.map((m) => `<tr><td class="mname">${u.m.length > 1 ? esc(m.n) : ''}</td>${['M', 'T', 'Sv', 'W', 'Ld', 'OC'].map((k) => (opts.mods && (opts.mods.stat[k] || opts.mods.set[k]) ? `<td class="mod">${esc(opts.mods.set[k] || bump(m[k], opts.mods.stat[k], k))}<sup>✦</sup></td>` : `<td>${esc(m[k] || '-')}</td>`)).join('')}</tr>`).join('')}
   ${opts.mods ? `<p class="small modnote">✦ Changed by ${esc(opts.mods.name)}</p>` : ''}</tbody></table>
   ${invStrip(u, f, opts.attached || [], opts.mods)}
   ${wt('ranged')}${wt('melee')}
@@ -2160,6 +2205,12 @@ const A = {
     touch(curList());
     rerenderTopSheet();
   },
+  enhInfo: (el) => {
+    const id = el.dataset.v;
+    if (ENHI.has(id)) ENHI.delete(id);
+    else ENHI.add(id);
+    rerenderTopSheet();
+  },
   setAttach: (el) => {
     const e = entryOf(el);
     e.attachTo = el.dataset.v;
@@ -2798,4 +2849,4 @@ boot().catch((e) => {
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
-window.__muster = { enhMods, detectTrackers, S, factions, validate, listPts, listDp, encodeList, decodeList };
+window.__muster = { enhMods, fxSummary, detectTrackers, S, factions, validate, listPts, listDp, encodeList, decodeList };
