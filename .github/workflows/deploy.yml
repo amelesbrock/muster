@@ -33,9 +33,6 @@ jobs:
         run: python3 scripts/missions.py
       - name: Compile weapon abilities
         run: python3 scripts/core_rules.py
-      - name: Dev sample (temporary)
-        run: |
-          gzip -c site/data/core.json > /tmp/c.gz; echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/c.gz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)

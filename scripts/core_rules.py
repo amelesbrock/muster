@@ -72,8 +72,8 @@ def main():
           '05': 'Attack sequence', '06': 'Visibility and mortal wounds', '07': 'The battle round', '08': 'Command phase',
           '09': 'Movement phase', '10': 'Shooting phase', '11': 'Charge phase', '12': 'Fight phase', '13': 'Terrain',
           '14': 'Objectives', '15': 'Core stratagems', '16': 'Actions', '17': 'Monsters and vehicles', '18': 'Transports',
-          '19': 'Attached units', '20': 'Strategic reserves', '21': 'Surge moves and flying', '22': 'Auras and faction abilities',
-          '23': 'Big models', '24': 'Core and weapon abilities', '25': 'Mustering your army'}
+          '19': 'Attached units', '20': 'Strategic reserves', '21': 'Surge moves and flying', '22': 'Other abilities',
+          '23': 'Aircraft', '24': 'Core and weapon abilities', '25': 'Mustering your army'}
     tt = body_h.find('<div class="tooltip_templates"')
     rules, chapter = [], ''
     for i, (pos, kind, title, num, endpos) in enumerate(marks):

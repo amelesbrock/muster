@@ -1427,7 +1427,12 @@ async function hydrateStrats() {
       if (st.allDets || !s.det || ctx.dets.includes(s.det)) list.push(s);
     }
   }
-  if ((st.side === 'core' || st.core) && S.core) list.push(...S.core.stratagems.filter((s) => /stratagem/i.test(s.type) && s.cp !== '').map((s) => ({ ...s, isCore: true })));
+  if ((st.side === 'core' || st.core) && S.core) {
+    // core stratagems only (no 0 CP Challenger cards, no movement abilities); the later copy wins when a name was respelled
+    const seen = new Map();
+    for (const s of S.core.stratagems) if (/stratagem/i.test(s.type) && !/challenger/i.test(s.type) && s.cp !== '' && +s.cp > 0) seen.set(s.n.replace(/[^A-Z]/gi, '').toUpperCase(), s);
+    list.push(...[...seen.values()].map((s) => ({ ...s, isCore: true })));
+  }
   const q = st.q.toLowerCase();
   const filtered = list.filter((s) => {
     if (st.phase && !phaseKeys(s.ph).includes(st.phase)) return false;
@@ -1505,7 +1510,7 @@ async function hydrateRules() {
     if (!chapters.has(r.ch)) chapters.set(r.ch, []);
     chapters.get(r.ch).push({ id: 'r' + r.num + r.n, n: r.n, num: r.num, lvl: r.lvl, d: r.d });
   }
-  for (const [ch, items] of chapters) push(ch, items);
+  for (const [ch, items] of [...chapters].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))) push(ch, items);
   push('Weapon abilities', Object.values(core.weaponAbilities || {}).map((w) => ({ id: 'w' + w.n, n: w.n, d: w.d })).sort((a, b) => a.n.localeCompare(b.n)));
   if (!groups.length) {
     el.innerHTML = '<p class="muted center">Rules text isn’t on this phone yet — connect to the internet and open this tab again.</p>';

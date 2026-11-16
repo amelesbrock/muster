@@ -1,0 +1,20 @@
+// Strats & Rules tab: Core shows only CP stratagems; Rules is chaptered and searchable (e.g. "disembark")
+import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome' });
+const p = await (await b.newContext({ viewport:{width:390,height:844}, isMobile:true })).newPage();
+const errs=[]; p.on('pageerror',e=>errs.push(e.message));
+await p.goto('http://localhost:8765/'); await p.waitForTimeout(800);
+await p.locator('[data-act=tab][data-tab=strats]').click(); await p.waitForTimeout(500);
+console.log('seg', await p.locator('.seg button, [data-act=stSide]').allInnerTexts());
+await p.locator('text=Core').first().click(); await p.waitForTimeout(600);
+const core = await p.evaluate(()=>[...document.querySelectorAll('.fold-h')].slice(0,30).map(x=>x.textContent.trim()));
+console.log('core strats:', core.join(' | ').slice(0,600));
+await p.locator('button:has-text("Rules")').first().click(); await p.waitForTimeout(1500);
+console.log('chapters', (await p.locator('.fold-h').allInnerTexts()).map(t=>t.replace(/\n/g,' ')).join(' ; '));
+await p.fill('#rulesQ','disembark'); await p.waitForTimeout(800);
+console.log('search', (await p.locator('.ritem-h').allInnerTexts()).map(t=>t.replace(/\n/g,' ')).join(' ; '));
+await p.locator('.ritem-h:has-text("EMERGENCY DISEMBARK")').click(); await p.waitForTimeout(300);
+console.log('text', (await p.locator('.rule').first().innerText()).slice(0,500));
+await p.screenshot({path:'/tmp/rules.png'});
+console.log('errors', errs);
+await b.close();

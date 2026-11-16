@@ -100,6 +100,7 @@ const trk = await page.locator('.trk-row').count();
 T('Votann Yield Points tracker shown', trk >= 1 && /Yield/.test(await page.locator('.trk-row').first().innerText()));
 // stratagem use from Stratagems tab spends CP
 await page.locator('[data-act=playerStrats][data-i="0"]').click(); await W(400);
+if (await page.locator('[data-act=stFoldAll][data-v=open]').count()) { await page.locator('[data-act=stFoldAll]').click(); await W(); }
 await page.locator('[data-act=stToggle]').first().click(); await W();
 const use = top().locator('[data-act=stUse]');
 await page.locator('[data-act=stUse]').first().click(); await W(300);
