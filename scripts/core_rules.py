@@ -95,7 +95,7 @@ def main():
             chs.append([r['ch'], 0])
         chs[-1][1] += 1
 
-    import os
+    pass
     if os.environ.get('CR_DEBUG'):
         for m in re.finditer(r'<span class="h_number">(\d\d|05\.0\d|01\.0\d)</span>', h):
             print('DBG', m.group(1), repr(h[max(0,m.start()-260):m.start()]))
