@@ -1480,6 +1480,7 @@ function viewBattle() {
         <div class="pc-total"><b>${T[i].total}</b><span>VP</span></div><div class="pc-split muted">P ${T[i].pri} · S ${T[i].sec}${p.battleReady ? ` · BR ${T[i].br}` : ''}</div>
         ${stepper('CP', p.cp, `cp:${i}`)}${stepper(`Primary R${r}`, p.primary[r - 1], `pri:${i}`)}${stepper(`Secondary R${r}`, p.secondary[r - 1], `sec:${i}`)}
         <button class="secbtn" data-act="secSheet" data-i="${i}"><span class="muted small">${p.sec?.mode === 'fixed' ? 'Fixed' : 'Tactical'} secondaries</span>${secActive(p).map((n) => `<div class="secname">${esc(n)}</div>`).join('') || '<div class="muted small">Tap to choose / draw</div>'}</button>
+        ${(!p.sec || p.sec.mode !== 'fixed') && secActive(p).length < 2 ? `<button class="btn small primary block draw-btn" data-act="secQuickDraw" data-i="${i}">🎲 Draw secondaries</button>` : ''}
         <label class="toggle small"><input type="checkbox" data-act="toggleBR" data-i="${i}" ${p.battleReady ? 'checked' : ''}><span>Battle ready (+${g.caps.battleReady})</span></label>
         <div class="pc-links">${p.listId ? `<button class="link" data-act="openPlayerList" data-i="${i}">Army</button>` : ''}<button class="link" data-act="playerStrats" data-i="${i}">Stratagems</button></div>
       </div>`)
@@ -1721,7 +1722,9 @@ async function missionsBrowser() {
           ${fds.map((a) => `<tr><th>${esc(a)}</th>${fds.map((b) => `<td>${esc(primaryFor(a, b))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       } else {
         const list = { pm: M.primary, sm: M.secondary, dp: M.deployments, tw: M.twists }[MB.tab];
-        body = list.map((c) => `<details class="mdet"><summary>${esc(c.n)}${c.fixed ? ' <span class="tag">Fixed values</span>' : ''}</summary>${cardHtml(c, MB.tab)}</details>`).join('');
+        if (MB.tab === 'sm') body = `<button class="btn primary block" data-act="mbRandom">🎲 Random 2 secondaries</button>${(MB.rand || []).map((n) => cardHtml(cardByName(M.secondary, n))).join('')}<h3 class="sec">All secondaries</h3>`;
+        else body = '';
+        body += list.map((c) => `<details class="mdet"><summary>${esc(c.n)}${c.fixed ? ' <span class="tag">Fixed values</span>' : ''}</summary>${cardHtml(c, MB.tab)}</details>`).join('');
       }
       return `${head('Missions & cards')}<div class="sheet-sub"><div class="chips scroll">${tabs.map(([k, n]) => `<button class="chip ${MB.tab === k ? 'on' : ''}" data-act="mbTab" data-v="${k}">${n}</button>`).join('')}</div></div><div class="sheet-body">${body}</div>`;
     },
@@ -2243,6 +2246,32 @@ const A = {
     const n = el.dataset.n;
     sc.fixed = sc.fixed.includes(n) ? sc.fixed.filter((x) => x !== n) : [...sc.fixed, n].slice(-2);
     save('games');
+    rerenderTopSheet();
+  },
+  secQuickDraw: async (el) => {
+    await ensureMissions();
+    if (!S.missions) return toast('Secondary cards haven’t downloaded yet');
+    const p = activeGame().players[+el.dataset.i];
+    p.sec ||= { mode: 'tactical', fixed: [], active: [], discard: [], swapUsed: false };
+    const sc = p.sec;
+    const deck = S.missions.secondary.map((c) => c.n).filter((n) => !sc.active.includes(n) && !sc.discard.includes(n));
+    if (!deck.length) return toast('Deck empty — open Secondaries to reshuffle');
+    const drawn = [];
+    while (sc.active.length < 2 && deck.length) {
+      const n = deck.splice(Math.floor(Math.random() * deck.length), 1)[0];
+      sc.active.push(n);
+      drawn.push(n);
+    }
+    save('games');
+    toast(`${p.name} drew: ${drawn.join(' & ')}`);
+    rerender();
+  },
+  mbRandom: () => {
+    const all = S.missions?.secondary || [];
+    if (!all.length) return;
+    MB.rand = [];
+    const pool = [...all];
+    while (MB.rand.length < 2 && pool.length) MB.rand.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0].n);
     rerenderTopSheet();
   },
   secDraw: (el) => {

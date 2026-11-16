@@ -428,3 +428,4 @@ td.mod, .stats td.mod { color: var(--green); font-weight: 800; }
 td.mod sup, .stats td.mod sup { font-size: 9px; color: var(--accent); }
 .wkw-b.mod { color: var(--green); border-color: rgba(116,194,122,.5); }
 .modnote { color: var(--green); margin: 4px 0; }
+.draw-btn { margin-top: 8px; min-height: 36px; }
