@@ -52,15 +52,22 @@ def main():
         if name and (name not in actions or len(body) > len(actions[name])):
             actions[name] = body
     # Whole core rules as a searchable reference: every numbered heading with the text under it
-    tt = h.find('<div class="tooltip_templates"')
-    end_cut = tt if tt > 0 else len(h)
-    body_h = h[:end_cut]
+    body_h = h
     marks = []
     for m in re.finditer(r'<h1[^>]*>(.*?)</h1>', body_h, re.S):
         marks.append((m.start(), 'chapter', re.sub(r'<[^>]+>', ' ', m.group(1)).strip(), '', m.end()))
     for m in re.finditer(r'<(h2|h3|div)([^>]*)>([^<]{2,90})<span class="h_number">([\d.]+)</span>', body_h):
         marks.append((m.start(), m.group(1), m.group(3).strip(), m.group(4), m.end()))
     marks.sort()
+    # tooltips repeat some headings: keep the first copy of each numbered heading that isn't inside a tooltip
+    seen_num, kept = set(), []
+    for mk in marks:
+        if mk[1] != 'chapter':
+            if 'tooltip_content' in body_h[max(0, mk[0] - 400):mk[0]] or mk[3] in seen_num:
+                continue
+            seen_num.add(mk[3])
+        kept.append(mk)
+    marks = kept
     rules, chapter = [], ''
     for i, (pos, kind, title, num, endpos) in enumerate(marks):
         if kind == 'chapter':
@@ -88,7 +95,7 @@ def main():
             chs.append([r['ch'], 0])
         chs[-1][1] += 1
     print('core rules:', len(rules), 'sections in', len(chs), 'chapters:', chs)
-    print('sizes:', sorted(len(r['d']) for r in rules)[-5:])
+    print('sizes:', sorted(len(r['d']) for r in rules)[-5:], 'marks', len(marks), 'h1', len(re.findall(r'<h1', body_h)))
 
 
 if __name__ == '__main__':
