@@ -264,7 +264,23 @@ function validate(l, f) {
       if (tagSeen.has(t)) out.push({ level: 'error', msg: `${tagSeen.get(t)} and ${d.n} both have the ${t} tag — they can't be combined.` });
       else tagSeen.set(t, d.n);
     }
-    for (const x of d?.restrict || []) if (!/ tag /i.test(x)) out.push({ level: 'warn', msg: `${d.n}: ${x}` });
+    for (const x of d?.restrict || []) {
+      if (/ tag /i.test(x)) continue;
+      // "You cannot include units with any of the following keywords …: AIRCRAFT ; COMMISSAR ; EPIC HERO"
+      const ban = /cannot include units with any of the following keywords[^:]*:\s*(.+)$/i.exec(x);
+      if (ban) {
+        const kws = ban[1].split(/\s*[;,]\s*/).map((k) => k.replace(/\.$/, '').trim().toLowerCase()).filter(Boolean);
+        const borrowed = (f.crossovers || []).filter((c) => c.unlock.includes(d.id)).map((c) => c.n);
+        for (const e of l.units) {
+          const u = f.unitById.get(e.unitId);
+          if (!u || (borrowed.length && !borrowed.includes(u.xg))) continue;
+          const hit = kws.find((k) => u.kw.some((kw) => kw.toLowerCase() === k) || u.n.toLowerCase() === k);
+          if (hit) out.push({ level: 'error', msg: `${u.n} can't be taken through ${d.n} (${hit.toUpperCase()} units are excluded).` });
+        }
+        continue;
+      }
+      out.push({ level: 'warn', msg: `${d.n}: ${x}` });
+    }
   }
   const disp = dispositionsOf(l, f);
   if (l.detachments.length && !l.disposition) out.push({ level: 'warn', msg: 'No Force Disposition chosen.' });
@@ -310,6 +326,13 @@ function validate(l, f) {
   for (const { host, leaders, support } of onHost.values()) {
     if (leaders.length > 1) out.push({ level: 'error', msg: `${host.name} can only have one Leader (has ${leaders.join(', ')}).` });
     if (support.length > 1) out.push({ level: 'error', msg: `${host.name} can only have one Support character (has ${support.join(', ')}).` });
+  }
+  // allied units (e.g. Brood Brothers) often have a points cap per battle size
+  for (const c of f.crossovers || []) {
+    const cap = c.ptsLimit && c.ptsLimit[sizeKey(l) === 'incursion' ? 'incursion' : 'strikeforce'];
+    if (!cap) continue;
+    const used = l.units.filter((e) => f.unitById.get(e.unitId)?.xg === c.n).reduce((t, e) => t + entryPts(e, f, l), 0);
+    if (used > cap) out.push({ level: 'error', msg: `${c.n} units total ${used} pts — the limit is ${cap} pts at this battle size.` });
   }
   for (const e of l.units) {
     const u = f.unitById.get(e.unitId);
@@ -912,6 +935,11 @@ function pickerSections(f, l) {
 }
 function addUnitSheet() {
   picker.q = '';
+  // remember open sections per army list, start fresh for another list
+  if (picker.list !== S.openListId) {
+    picker.list = S.openListId;
+    picker.open = {};
+  }
   showSheet(
     () => {
       const l = curList();
@@ -1020,10 +1048,10 @@ function editEntry(entryUid) {
         <label class="lbl">Notes</label>
         <textarea data-bind="entryNotes" data-uid="${e.uid}" rows="2" placeholder="Anything else to remember">${esc(e.notes)}</textarea>
         <div class="row gap wrap mt"><button class="btn ghost grow" data-act="dupEntry" data-uid="${e.uid}">Duplicate</button><button class="btn danger grow" data-act="removeEntry" data-uid="${e.uid}">Remove</button></div>
-        <div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { build: true })}</div>`;
+        <div class="ds-inline">${datasheet(u, f, wg.parsed && [...wg.counts.values()].some((c) => c > 0) ? wg.counts : null, { build: true })}</div>`;
       const ws = wargearSummary(e, u, l);
       const en = e.enh && f.enhById.get(e.enh);
-      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed ? wg.counts : null, { play: true, mods: enhMods(en), attached: l.units.filter((x) => x.attachTo === e.uid).map((x) => f.unitById.get(x.unitId)).filter(Boolean) })}</div>`;
+      const sheetPart = `${ws ? `<p class="small loadout">Loadout: <b>${esc(ws)}</b></p>` : ''}${en ? `<div class="rule enh-rule"><b>✦ Enhancement: ${esc(en.n)}</b><div>${rich(en.d)}</div></div>` : ''}<div class="ds-inline">${datasheet(u, f, wg.parsed && [...wg.counts.values()].some((c) => c > 0) ? wg.counts : null, { play: true, mods: enhMods(en), attached: l.units.filter((x) => x.attachTo === e.uid).map((x) => f.unitById.get(x.unitId)).filter(Boolean) })}</div>`;
       return `${head(e.name)}<div class="sheet-body">
         <div class="row"><div class="big-pts grow">${entryPts(e, f, l)} <span>pts</span></div>${e.warlord ? '<span class="tag big">♛ Warlord</span>' : ''}</div>
         ${co.step ? `<p class="warn small">${esc(co.step)} — this is copy ${copyNo(e, l)} of this datasheet.</p>` : ''}
@@ -1172,6 +1200,7 @@ function invStrip(u, f, attached, em) {
 function weaponAbilityKey(t) {
   return t
     .replace(/[\[\]]/g, '')
+    .replace(/\s*:.*$/, '') // "Lethal Hits: non-MONSTER/VEHICLE" -> "Lethal Hits"
     .toUpperCase()
     .trim()
     .replace(/\s+(X|D?\d+\+?|\d+")$/, '')
@@ -2318,7 +2347,21 @@ const A = {
   },
   // battle
   newGame: () => newGameSheet(),
-  ngStart: () => startGame(),
+  ngStart: async () => {
+    startGame();
+    // make sure both armies' data is on the phone for stratagems and trackers
+    const g = activeGame();
+    for (const p of g?.players || []) {
+      if (p.factionId && !factions.has(p.factionId)) {
+        try {
+          await ensureFaction(p.factionId);
+        } catch {
+          /* offline: they can download later from the Stratagems tab */
+        }
+      }
+    }
+    rerender();
+  },
   setRound: (el) => {
     activeGame().round = +el.dataset.v;
     save('games');

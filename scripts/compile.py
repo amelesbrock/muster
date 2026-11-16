@@ -203,7 +203,11 @@ for fac in factions:
         for u in members:
             u['xg'] = grp
             u['xu'] = unlock
-        crossovers.append({'n': grp, 'kw': kws, 'units': len(members), 'unlock': unlock})
+        limits = {}
+        for did in unlock:
+            for size, pts in re.findall(r'(Incursion|Strike Force|Onslaught)\s*:?\s*Up to\s*(\d+)\s*(?:pts|points)', det_text[did], re.I):
+                limits[size.lower().replace(' ', '')] = int(pts)
+        crossovers.append({'n': grp, 'kw': kws, 'units': len(members), 'unlock': unlock, 'ptsLimit': limits})
     dets = []
     for d in detachments:
         if d['faction_id'] != fid or d['id'] in BA:
@@ -225,6 +229,11 @@ for fac in factions:
     } for e in enhs if e['faction_id'] == fid and e['detachment_id'] not in BA]
     fac_str = dedupe_strats([strat(s) for s in strats if s['faction_id'] == fid and s['detachment_id'] not in BA
                              and 'boarding' not in (s['type'] or '').lower()])
+    det_ids = {d['id'] for d in dets}
+    for st in fac_str:
+        if st['det'] and st['det'] not in det_ids:
+            st['det'] = ''  # e.g. Aeldari "Army Rules" stratagems: usable by the whole faction
+            st['dn'] = 'Army rule'
     army_rules = {}
     for u in units:
         if u.get('xg'):
