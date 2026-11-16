@@ -303,7 +303,8 @@ function validate(l, f) {
     if (seen.has(en.id)) out.push({ level: 'error', msg: `${en.n} taken more than once.` });
     seen.add(en.id);
     if (en.det && !l.detachments.includes(en.det)) out.push({ level: 'error', msg: `${en.n} needs the ${en.dn} detachment.` });
-    if (u && u.enh.length && !u.enh.includes(en.id)) out.push({ level: 'warn', msg: `${u.n} isn't listed as able to take ${en.n}.` });
+    if (u && !enhRestrictOk(en, u)) out.push({ level: 'error', msg: `${en.n} can't be taken by ${u.n}.` });
+    else if (u && u.enh.length && !u.enh.includes(en.id)) out.push({ level: 'warn', msg: `${u.n} isn't listed as able to take ${en.n}.` });
     if (u && u.epic) out.push({ level: 'error', msg: `${u.n} is an Epic Hero and can't take enhancements.` });
   }
   const wl = l.units.filter((e) => e.warlord);
@@ -998,7 +999,45 @@ function addUnit(id) {
 // entry editor — the unit screen: options, wargear and the full datasheet
 function eligibleEnh(u, l, f) {
   if (!u || u.epic) return [];
-  return f.enhancements.filter((x) => l.detachments.includes(x.det) && (u.enh.length ? u.enh.includes(x.id) : u.character && !x.up));
+  return f.enhancements.filter((x) => l.detachments.includes(x.det) && (u.enh.length ? u.enh.includes(x.id) : u.character && !x.up) && enhRestrictOk(x, u));
+}
+// Enhancement text starts with who may take it ("KELERMORPH/REDUCTUS SABOTEUR model only."); the data's
+// datasheet links are sometimes looser than that, so the text has the final say
+const enhRestrictCache = new Map();
+function enhRestrictOk(x, u) {
+  const key = x.id + '|' + u.id;
+  if (enhRestrictCache.has(key)) return enhRestrictCache.get(key);
+  const ok = (() => {
+    const t = plain(x.d).replace(/[’]/g, "'").replace(/\s+/g, ' ').trim();
+    const m = /^(.{2,90}?)\s+(?:models?|units?)\s+only\b/i.exec(t);
+    if (!m) return true;
+    let who = m[1].toLowerCase();
+    let excl = '';
+    const ex = /\(excluding ([^)]*)\)/.exec(who);
+    if (ex) {
+      excl = ex[1];
+      who = who.replace(ex[0], '').trim();
+    }
+    // lenient on purpose: an option passes when the unit shares any word of it beyond the faction name
+    // ("Titanic Character" passes a Baneblade; "Kelermorph/Reductus Saboteur" rejects a Sanctus)
+    const norm = (k) => k.toLowerCase().replace(/[’]/g, "'").replace(/^[^:]*:\s*/, '');
+    const words = (str) => str.split(/[\s]+/).filter(Boolean);
+    const facW = new Set((u.fkw || []).flatMap((k) => words(norm(k))));
+    const unitW = new Set([...u.kw, ...(u.mkw || []), u.n].flatMap((k) => words(norm(k))));
+    const hits = (a) => {
+      const w = words(a.replace(/^(friendly|the)\s+/, '')).filter((x) => !facW.has(x));
+      return !w.length || w.some((x) => unitW.has(x));
+    };
+    const alts = who.split(/\s*\/\s*|\s+or\s+|,\s*/).filter(Boolean);
+    if (!alts.some(hits)) return false;
+    if (excl && excl.split(/\s*\/\s*|\s+or\s+|,\s*|\s+and\s+/).some((a) => {
+      const w = words(a.replace(/\s+(models?|units?)$/, '')).filter((x) => !facW.has(x));
+      return w.length && w.every((x) => unitW.has(x));
+    })) return false;
+    return true;
+  })();
+  enhRestrictCache.set(key, ok);
+  return ok;
 }
 let entryTab = 'sheet';
 const ENHI = new Set(); // enhancements whose rules are expanded in the picker
@@ -2849,4 +2888,4 @@ boot().catch((e) => {
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
-window.__muster = { enhMods, fxSummary, detectTrackers, S, factions, validate, listPts, listDp, encodeList, decodeList };
+window.__muster = { enhMods, fxSummary, enhRestrictOk, detectTrackers, S, factions, validate, listPts, listDp, encodeList, decodeList };
