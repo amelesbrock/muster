@@ -1370,11 +1370,12 @@ function stratContext() {
 
 function viewStrats() {
   const st = S.strat;
+  if (st.side === 'rules') return viewRules();
   const ctx = stratContext();
   const g = activeGame();
   return `<header class="top"><div class="brand"><span class="logo">📜</span> Stratagems</div><div class="grow"></div>${gear}</header>
   <main class="pad">
-    <div class="seg">${[['mine', 'Mine'], ['opp', 'Opponent'], ['core', 'Core only']].map(([k, n]) => `<button class="${st.side === k ? 'on' : ''}" data-act="stSide" data-v="${k}">${n}</button>`).join('')}</div>
+    <div class="seg">${[['mine', 'Mine'], ['opp', 'Opponent'], ['core', 'Core'], ['rules', 'Rules']].map(([k, n]) => `<button class="${st.side === k ? 'on' : ''}" data-act="stSide" data-v="${k}">${n}</button>`).join('')}</div>
     <div id="stCtx">${stratCtxHtml(ctx)}</div>
     <input id="stQ" type="search" placeholder="Search stratagems…" value="${esc(st.q)}" autocomplete="off">
     <div class="chips scroll mt"><button class="chip ${st.phase ? '' : 'on'}" data-act="stPhase" data-v="">All phases</button>${PHASES.map((p) => `<button class="chip ${st.phase === p.k ? 'on' : ''}" data-act="stPhase" data-v="${p.k}">${p.label}</button>`).join('')}</div>
@@ -1399,6 +1400,7 @@ function stratCtxHtml(ctx) {
 }
 
 async function hydrateStrats() {
+  if (S.strat.side === 'rules') return hydrateRules();
   const el = $('#stList');
   if (!el) return;
   const st = S.strat;
@@ -1421,10 +1423,11 @@ async function hydrateStrats() {
   const list = [];
   if (f) {
     for (const s of f.stratagems) {
+      if (s.cp === '' || s.cp == null) continue; // abilities listed alongside stratagems live under Rules
       if (st.allDets || !s.det || ctx.dets.includes(s.det)) list.push(s);
     }
   }
-  if ((st.side === 'core' || st.core) && S.core) list.push(...S.core.stratagems.map((s) => ({ ...s, isCore: true })));
+  if ((st.side === 'core' || st.core) && S.core) list.push(...S.core.stratagems.filter((s) => /stratagem/i.test(s.type) && s.cp !== '').map((s) => ({ ...s, isCore: true })));
   const q = st.q.toLowerCase();
   const filtered = list.filter((s) => {
     if (st.phase && !phaseKeys(s.ph).includes(st.phase)) return false;
@@ -1477,6 +1480,55 @@ async function hydrateStrats() {
           ${open ? `<div class="fold-b strat-fold">${gr.items.map((x, i) => (x.isCore && (i === 0 || !gr.items[i - 1].isCore) ? '<div class="core-div">Core</div>' : '') + card(x)).join('')}</div>` : ''}</div>`;
       })
       .join('');
+}
+
+// ---- Rules & terminology: the core rules (numbered sections), weapon and unit abilities, searchable
+const RQ = { q: '', open: {}, item: {} };
+function viewRules() {
+  return `<header class="top"><div class="brand"><span class="logo">📖</span> Rules</div><div class="grow"></div>${gear}</header>
+  <main class="pad">
+    <div class="seg">${[['mine', 'Mine'], ['opp', 'Opponent'], ['core', 'Core'], ['rules', 'Rules']].map(([k, n]) => `<button class="${S.strat.side === k ? 'on' : ''}" data-act="stSide" data-v="${k}">${n}</button>`).join('')}</div>
+    <input id="rulesQ" type="search" placeholder="Search rules — e.g. disembark, engagement, cover…" value="${esc(RQ.q)}" autocomplete="off">
+    <div id="rulesList" class="mt"><div class="loading">Loading…</div></div>
+  </main>`;
+}
+async function hydrateRules() {
+  const el = $('#rulesList');
+  if (!el) return;
+  if (!S.core || !S.core.coreRules) S.core = (await data.downloadCore().catch(() => null)) || S.core;
+  const core = S.core || {};
+  const q = RQ.q.toLowerCase().trim();
+  const groups = [];
+  const push = (name, items) => items.length && groups.push({ name, items });
+  const chapters = new Map();
+  for (const r of core.coreRules || []) {
+    if (!chapters.has(r.ch)) chapters.set(r.ch, []);
+    chapters.get(r.ch).push({ id: 'r' + r.num + r.n, n: r.n, num: r.num, lvl: r.lvl, d: r.d });
+  }
+  for (const [ch, items] of chapters) push(ch, items);
+  push('Weapon abilities', Object.values(core.weaponAbilities || {}).map((w) => ({ id: 'w' + w.n, n: w.n, d: w.d })).sort((a, b) => a.n.localeCompare(b.n)));
+  if (!groups.length) {
+    el.innerHTML = '<p class="muted center">Rules text isn’t on this phone yet — connect to the internet and open this tab again.</p>';
+    return;
+  }
+  const match = (it) => !q || it.n.toLowerCase().includes(q) || plain(it.d).toLowerCase().includes(q);
+  let shown = 0;
+  el.innerHTML = groups
+    .map((gr) => {
+      const items = gr.items.filter(match);
+      if (!items.length) return '';
+      shown += items.length;
+      const open = q ? true : !!RQ.open[gr.name];
+      return `<div class="fold ${open ? 'open' : ''}"><button class="fold-h" data-act="rulesFold" data-k="${esc(gr.name)}"><span>${esc(gr.name)}</span><span class="muted">${items.length} ${open ? '▾' : '▸'}</span></button>
+        ${open ? `<div class="fold-b">${items
+          .map((it) => {
+            const o = RQ.item[it.id] || (q && items.length <= 3);
+            return `<div class="ritem lvl${it.lvl || 2}"><button class="ritem-h" data-act="rulesItem" data-k="${esc(it.id)}"><span>${it.num ? `<span class="muted small">${esc(it.num)}</span> ` : ''}${esc(it.n)}</span><span class="muted">${o ? '▾' : '▸'}</span></button>${o ? `<div class="rule">${rich(it.d) || '<span class="muted">See the sections below.</span>'}</div>` : ''}</div>`;
+          })
+          .join('')}</div>` : ''}</div>`;
+    })
+    .join('');
+  if (!shown) el.innerHTML = '<p class="muted center">Nothing matches.</p>';
 }
 
 async function oppPickSheet() {
@@ -2222,6 +2274,15 @@ const A = {
     hydrateStrats();
   },
   stOppPick: () => oppPickSheet(),
+  rulesFold: (el) => {
+    RQ.open[el.dataset.k] = !RQ.open[el.dataset.k];
+    keepScroll = true;
+    hydrateRules();
+  },
+  rulesItem: (el) => {
+    RQ.item[el.dataset.k] = !RQ.item[el.dataset.k];
+    hydrateRules();
+  },
   stFold: (el) => {
     const k = el.dataset.k;
     const st = S.strat;
@@ -2647,6 +2708,11 @@ document.addEventListener('input', (e) => {
       n.focus();
       n.setSelectionRange(pos, pos);
     }
+    return;
+  }
+  if (el.id === 'rulesQ') {
+    RQ.q = el.value;
+    hydrateRules();
     return;
   }
   if (el.id === 'stQ') {

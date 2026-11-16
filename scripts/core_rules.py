@@ -51,15 +51,43 @@ def main():
         body = re.sub(r'<script.*?</script>', '', rest[t0:t1 if t1 > 0 else None], flags=re.S)
         if name and (name not in actions or len(body) > len(actions[name])):
             actions[name] = body
+    # Whole core rules as a searchable reference: every numbered heading with the text under it
+    end_cut = min([i for i in (h.find('tooltip_templates'), h.find('<footer')) if i > 0] or [len(h)])
+    body_h = h[:end_cut]
+    marks = []
+    for m in re.finditer(r'<h1[^>]*>(.*?)</h1>', body_h, re.S):
+        marks.append((m.start(), 'chapter', re.sub(r'<[^>]+>', ' ', m.group(1)).strip(), '', m.end()))
+    for m in re.finditer(r'<(h2|h3|div)([^>]*)>([^<]{2,90})<span class="h_number">([\d.]+)</span>', body_h):
+        marks.append((m.start(), m.group(1), m.group(3).strip(), m.group(4), m.end()))
+    marks.sort()
+    rules, chapter = [], ''
+    for i, (pos, kind, title, num, endpos) in enumerate(marks):
+        if kind == 'chapter':
+            chapter = re.sub(r'\s+', ' ', title)
+            continue
+        nxt = marks[i + 1][0] if i + 1 < len(marks) else min(endpos + 15000, len(body_h))
+        seg = body_h[endpos:nxt]
+        seg = re.sub(r'<script.*?</script>', '', seg, flags=re.S)
+        seg = re.sub(r'^\s*</(div|h2|h3)>', '', seg)
+        title_clean = re.sub(r'\s+', ' ', title)
+        rules.append({'num': num, 'n': title_clean, 'ch': chapter or num.split('.')[0], 'lvl': 3 if kind == 'h3' or num.count('.') > 1 else 2, 'd': seg})
     path = f'{D}/core.json'
     core = json.load(open(path, encoding='utf-8')) if os.path.exists(path) else {}
     core['weaponAbilities'] = out
     core['actions'] = actions
+    core['coreRules'] = rules
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(core, fh, ensure_ascii=False, separators=(',', ':'))
     os.remove(SRC)
     print('weapon abilities:', len(out), sorted(out))
     print('actions:', len(actions), sorted(actions)[:60])
+    chs = []
+    for r in rules:
+        if not chs or chs[-1][0] != r['ch']:
+            chs.append([r['ch'], 0])
+        chs[-1][1] += 1
+    print('core rules:', len(rules), 'sections in', len(chs), 'chapters:', chs)
+    print('sizes:', sorted(len(r['d']) for r in rules)[-5:])
 
 
 if __name__ == '__main__':

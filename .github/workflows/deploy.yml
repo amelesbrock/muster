@@ -31,21 +31,11 @@ jobs:
         run: python3 scripts/compile.py
       - name: Compile missions
         run: python3 scripts/missions.py
-      - name: Dev sample (temporary)
-        run: |
-          python3 - <<'PY'
-          import re, collections
-          h = open('site/data/core-rules.html', encoding='utf-8').read()
-          heads = re.findall(r'<(h[1-4]|div)([^>]*)>([^<]{2,80})<span class="h_number">([\d.]+)</span>', h)
-          print('HEADS', len(heads), collections.Counter((t, re.sub(r'id="[^"]*"', '', a).strip()) for t, a, n, num in heads).most_common(12))
-          for t, a, n, num in heads[:80]: print('H', num, t, n.strip())
-          for kw in ['ENGAGEMENT RANGE', 'Engagement Range', 'BATTLE-SHOCK', 'Glossary', 'GLOSSARY']:
-              ms = list(re.finditer(re.escape(kw), h))
-              print('KW', kw, len(ms))
-              if ms: print('KSNIP', h[max(0, ms[0].start()-400):ms[0].start()+700].replace('\n', ' '))
-          PY
       - name: Compile weapon abilities
         run: python3 scripts/core_rules.py
+      - name: Dev sample (temporary)
+        run: |
+          gzip -c site/data/core.json > /tmp/c.gz; echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/c.gz; echo; echo "SAMPLE-END"
       - name: Stamp build
         run: |
           STAMP=$(date -u +%Y%m%d%H%M)
