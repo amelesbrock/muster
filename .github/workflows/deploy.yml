@@ -32,7 +32,7 @@ jobs:
       - name: Compile missions
         run: python3 scripts/missions.py
       - name: Compile weapon abilities
-        run: CR_DEBUG=1 python3 scripts/core_rules.py
+        run: python3 scripts/core_rules.py
       - name: Dev sample (temporary)
         run: |
           gzip -c site/data/core.json > /tmp/c.gz; echo "SAMPLE-BEGIN"; base64 -w 0 /tmp/c.gz; echo; echo "SAMPLE-END"

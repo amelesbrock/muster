@@ -63,22 +63,29 @@ def main():
     seen_num, kept = set(), []
     for mk in marks:
         if mk[1] != 'chapter':
-            if 'tooltip_content' in body_h[max(0, mk[0] - 400):mk[0]] or mk[3] in seen_num:
+            if 'id="tooltip_content' in body_h[max(0, mk[0] - 400):mk[0]] or mk[3] in seen_num:
                 continue
             seen_num.add(mk[3])
         kept.append(mk)
     marks = kept
+    CH = {'01': 'Core concepts', '02': 'Datasheets', '03': 'Moving and setting up', '04': 'Making attacks',
+          '05': 'Attack sequence', '06': 'Visibility and mortal wounds', '07': 'The battle round', '08': 'Command phase',
+          '09': 'Movement phase', '10': 'Shooting phase', '11': 'Charge phase', '12': 'Fight phase', '13': 'Terrain',
+          '14': 'Objectives', '15': 'Core stratagems', '16': 'Actions', '17': 'Monsters and vehicles', '18': 'Transports',
+          '19': 'Attached units', '20': 'Strategic reserves', '21': 'Surge moves and flying', '22': 'Auras and faction abilities',
+          '23': 'Big models', '24': 'Core and weapon abilities', '25': 'Mustering your army'}
+    tt = body_h.find('<div class="tooltip_templates"')
     rules, chapter = [], ''
     for i, (pos, kind, title, num, endpos) in enumerate(marks):
         if kind == 'chapter':
             chapter = re.sub(r'\s+', ' ', title)
             continue
-        nxt = marks[i + 1][0] if i + 1 < len(marks) else min(endpos + 15000, len(body_h))
+        nxt = marks[i + 1][0] if i + 1 < len(marks) else min(endpos + 15000, tt if tt > endpos else len(body_h))
         seg = body_h[endpos:nxt]
         seg = re.sub(r'<script.*?</script>', '', seg, flags=re.S)
         seg = re.sub(r'^\s*</(div|h2|h3)>', '', seg)
         title_clean = re.sub(r'\s+', ' ', title)
-        rules.append({'num': num, 'n': title_clean, 'ch': chapter or num.split('.')[0], 'lvl': 3 if kind == 'h3' or num.count('.') > 1 else 2, 'd': seg})
+        rules.append({'num': num, 'n': title_clean, 'ch': (num.split('.')[0] + ' · ' + CH[num.split('.')[0]]) if num.split('.')[0] in CH else (chapter or num.split('.')[0]), 'lvl': 3 if kind == 'h3' or num.count('.') > 1 else 2, 'd': seg})
     path = f'{D}/core.json'
     core = json.load(open(path, encoding='utf-8')) if os.path.exists(path) else {}
     core['weaponAbilities'] = out
@@ -95,10 +102,6 @@ def main():
             chs.append([r['ch'], 0])
         chs[-1][1] += 1
 
-    pass
-    if os.environ.get('CR_DEBUG'):
-        for m in re.finditer(r'<span class="h_number">(\d\d|05\.0\d|01\.0\d)</span>', h):
-            print('DBG', m.group(1), repr(h[max(0,m.start()-260):m.start()]))
     print('core rules:', len(rules), 'sections in', len(chs), 'chapters:', chs)
     print('sizes:', sorted(len(r['d']) for r in rules)[-5:], 'marks', len(marks), 'h1', len(re.findall(r'<h1', body_h)))
 
