@@ -94,6 +94,11 @@ def main():
         if not chs or chs[-1][0] != r['ch']:
             chs.append([r['ch'], 0])
         chs[-1][1] += 1
+
+    import os
+    if os.environ.get('CR_DEBUG'):
+        for m in re.finditer(r'<span class="h_number">(\d\d|05\.0\d|01\.0\d)</span>', h):
+            print('DBG', m.group(1), repr(h[max(0,m.start()-260):m.start()]))
     print('core rules:', len(rules), 'sections in', len(chs), 'chapters:', chs)
     print('sizes:', sorted(len(r['d']) for r in rules)[-5:], 'marks', len(marks), 'h1', len(re.findall(r'<h1', body_h)))
 
