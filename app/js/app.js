@@ -1288,11 +1288,21 @@ function weaponAbilityKey(t) {
     .replace(/\s+(X|D?\d+\+?|\d+")$/, '')
     .replace(/\s+/g, ' ');
 }
-async function showWeaponKeyword(t) {
+// datasheet-only weapon rules (e.g. Votann [CONVERSION]) live in the unit's wargear abilities, not the core rules
+function datasheetWeaponRule(k, unitId) {
+  const units = [...factions.values()].flatMap((f) => f.units || []);
+  const own = units.filter((u) => u.id === unitId);
+  for (const u of [...own, ...units]) {
+    const a = (u.ab || []).find((x) => x && x.n && x.d && weaponAbilityKey(x.n) === k);
+    if (a) return { n: a.n, d: a.d, src: u.n };
+  }
+  return null;
+}
+async function showWeaponKeyword(t, unitId) {
   if (!S.core || !S.core.weaponAbilities || !S.core.actions) S.core = (await data.downloadCore().catch(() => null)) || S.core;
   const all = S.core?.weaponAbilities || {};
   const k = weaponAbilityKey(t);
-  let hit = all[k];
+  let hit = all[k] || datasheetWeaponRule(k, unitId);
   if (!hit && /^ANTI-/.test(k)) hit = Object.entries(all).find(([key]) => key.startsWith('ANTI'))?.[1];
   if (!hit) hit = Object.entries(all).find(([key]) => k.startsWith(key + ' ') || key === k.split(' ')[0])?.[1];
   // e.g. [PISTOL] says it is identical to [CLOSE-QUARTERS]: show that rule's text too
@@ -1308,7 +1318,7 @@ async function showWeaponKeyword(t) {
   const acts = S.core?.actions || {};
   const txt = hit ? plain([hit.d, ...extra.map((k2) => all[k2].d)].join(' ')).toLowerCase() : '';
   const actHits = Object.keys(acts).filter((a) => a.length > 4 && txt.includes(a.toLowerCase()));
-  showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>${extra.map((k2) => `<h3 class="ds-h abil">${esc(all[k2].n)} — applies to this weapon</h3><div class="rule">${rich(all[k2].d)}</div>`).join('')}${actHits.map((a) => `<h3 class="ds-h ranged">${esc(a)}</h3><div class="rule">${rich(acts[a])}</div>`).join('')}` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
+  showSheet(() => `${head(t.toUpperCase())}<div class="sheet-body">${hit ? `<div class="rule">${rich(hit.d)}</div>${hit.src ? `<p class="muted small">Datasheet weapon rule (${esc(hit.src)})</p>` : ''}${extra.map((k2) => `<h3 class="ds-h abil">${esc(all[k2].n)} — applies to this weapon</h3><div class="rule">${rich(all[k2].d)}</div>`).join('')}${actHits.map((a) => `<h3 class="ds-h ranged">${esc(a)}</h3><div class="rule">${rich(acts[a])}</div>`).join('')}` : '<p class="muted">No rule text found for this keyword. It may be a faction or datasheet rule — check the unit’s abilities.</p>'}</div>`);
 }
 
 // Composition, loadout and points — shown on the Unit options tab
@@ -1338,7 +1348,7 @@ function datasheet(u, f, counts, opts = {}) {
     const extraKw = em ? [...(em.kw[w.t] || []), ...(psy ? em.kw.psychic || [] : [])] : [];
     const cell = (k, v) => (wm[k] ? `<td class="mod">${esc(bump(v, wm[k], k))}<sup>✦</sup></td>` : `<td>${esc(v)}</td>`);
     const kws = [...plain(w.k).split(/,\s*/).filter(Boolean).map((x) => [x.trim(), false]), ...extraKw.map((x) => [x, true])];
-    return `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${kws.length ? `<div class="wkw">${kws.map(([x, isMod]) => `<button class="wkw-b ${isMod ? 'mod' : ''}" data-act="wkw" data-k="${esc(x)}">${esc(x)}${isMod ? ' ✦' : ''}</button>`).join('')}</div>` : ''}</td>${cell('R', w.r)}${cell('A', w.A)}${cell('SK', w.s)}${cell('S', w.S)}${cell('AP', w.AP)}${cell('D', w.D)}</tr>`;
+    return `<tr class="${counts && !counts.get(w.n) ? 'dim' : ''}"><td class="wn">${counts && counts.get(w.n) ? `<span class="wcount">${counts.get(w.n)}×</span> ` : ''}${esc(w.n)}${kws.length ? `<div class="wkw">${kws.map(([x, isMod]) => `<button class="wkw-b ${isMod ? 'mod' : ''}" data-act="wkw" data-k="${esc(x)}" data-u="${esc(u.id)}">${esc(x)}${isMod ? ' ✦' : ''}</button>`).join('')}</div>` : ''}</td>${cell('R', w.r)}${cell('A', w.A)}${cell('SK', w.s)}${cell('S', w.S)}${cell('AP', w.AP)}${cell('D', w.D)}</tr>`;
   };
   const wt = (kind) => {
     const ws = u.w.filter((w) => w.t === kind);
@@ -2256,7 +2266,7 @@ const A = {
     touch(curList());
     rerenderTopSheet();
   },
-  wkw: (el) => showWeaponKeyword(el.dataset.k),
+  wkw: (el) => showWeaponKeyword(el.dataset.k, el.dataset.u),
   openCollection: () => openCollection(),
   closeCollection: () => {
     S.collView = null;
